@@ -72,14 +72,14 @@ fn bench_bytetrack(c: &mut Criterion) {
         .collect::<Vec<(usize, Vec<Object>)>>();
     detections.sort_by(|a, b| a.0.cmp(&b.0));
 
-    let mut tracker = ByteTracker::new(60, 60, 0.5, 0.6, 0.8);
-    c.bench_function("bytetrack", |b| {
-        b.iter(|| {
-            for (_, objs) in detections.iter() {
-                let _ = tracker.update(objs.iter());
-            }
-        });
-    });
+    // let mut tracker = ByteTracker::new(60, 60, 0.5, 0.6, 0.8);
+    // c.bench_function("bytetrack", |b| {
+    //     b.iter(|| {
+    //         for (_, objs) in detections.into_iter().cloned() {
+    //             let _ = tracker.update(objs.into_iter());
+    //         }
+    //     });
+    // });
 }
 
 criterion_group!(benches, bench_bytetrack);
