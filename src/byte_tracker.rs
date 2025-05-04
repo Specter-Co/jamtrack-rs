@@ -49,9 +49,9 @@ impl ByteTracker {
         }
     }
 
-    pub fn update(
+    pub fn update<'a>(
         &mut self,
-        objects: &Vec<Object>,
+        objects: impl Iterator<Item = &'a Object>,
     ) -> Result<Vec<Object>, ByteTrackError> {
         self.frame_id += 1;
 

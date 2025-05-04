@@ -76,7 +76,7 @@ fn bench_bytetrack(c: &mut Criterion) {
     c.bench_function("bytetrack", |b| {
         b.iter(|| {
             for (_, objs) in detections.iter() {
-                let _ = tracker.update(objs);
+                let _ = tracker.update(objs.iter());
             }
         });
     });
