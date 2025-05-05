@@ -127,6 +127,16 @@ impl STrack {
         return self.start_frame_id;
     }
 
+    #[inline(always)]
+    pub(crate) fn get_vel_x(&self) -> f32 {
+        return self.mean[4];
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_vel_y(&self) -> f32 {
+        return self.mean[5];
+    }
+
     pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize) {
         self.kalman_filter.initiate(
             &mut self.mean,

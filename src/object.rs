@@ -12,6 +12,7 @@ pub struct Object {
     prob: f32,
     rect: Rect<f32>,
     track_id: Option<usize>,
+    track_vel_xy: Option<(f32, f32)>,
 }
 
 impl Object {
@@ -20,12 +21,14 @@ impl Object {
         rect: Rect<f32>,
         prob: f32,
         track_id: Option<usize>,
+        track_vel_xy: Option<(f32, f32)>,
     ) -> Self {
         Self {
             detection_id,
             prob,
             rect,
             track_id,
+            track_vel_xy,
         }
     }
 
@@ -68,6 +71,11 @@ impl Object {
     pub fn get_track_id(&self) -> Option<usize> {
         self.track_id
     }
+
+    #[inline(always)]
+    pub fn get_track_vel_xy(&self) -> Option<(f32, f32)> {
+        self.track_vel_xy
+    }
 }
 
 impl From<STrack> for Object {
@@ -77,6 +85,7 @@ impl From<STrack> for Object {
             strack.get_rect(),
             strack.get_score(),
             Some(strack.get_track_id()),
+            Some((strack.get_vel_x(), strack.get_vel_y())),
         )
     }
 }
@@ -88,6 +97,7 @@ impl From<&STrack> for Object {
             strack.get_rect(),
             strack.get_score(),
             Some(strack.get_track_id()),
+            Some((strack.get_vel_x(), strack.get_vel_y())),
         )
     }
 }
