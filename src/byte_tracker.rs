@@ -64,7 +64,9 @@ impl ByteTracker {
         for obj in objects {
             let strack = STrack::new(
                 obj.get_detection_id(),
-                obj.get_rect(), obj.get_prob());
+                obj.get_rect(),
+                obj.get_prob(),
+            );
             if obj.get_prob() >= self.track_thresh {
                 det_stracks.push(strack);
             } else {

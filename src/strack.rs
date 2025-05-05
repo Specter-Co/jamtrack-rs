@@ -166,6 +166,8 @@ impl STrack {
         if 0 <= new_track_id {
             self.track_id = new_track_id as usize;
         }
+
+        self.detection_id_last = new_track.detection_id_last;
         self.frame_id = frame_id;
         self.tracklet_len = 0;
     }
