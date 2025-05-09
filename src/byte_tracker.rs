@@ -1,15 +1,18 @@
+use pyo3::prelude::*;
 use crate::{
     error::ByteTrackError,
     lapjv::lapjv,
     object::Object,
     rect::Rect,
+    rect::PyRect,
     strack::{STrack, STrackState},
 };
 use std::{collections::HashMap, vec};
+
 /* ----------------------------------------------------------------------------
  * ByteTracker
  * ---------------------------------------------------------------------------- */
-
+#[pyclass]
 #[derive(Debug)]
 pub struct ByteTracker {
     track_thresh: f32,
@@ -25,7 +28,17 @@ pub struct ByteTracker {
     removed_stracks: Vec<STrack>,
 }
 
+#[pymodule]
+fn byte_tracker(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+    m.add_class::<ByteTracker>()?;
+    m.add_class::<Object>()?;
+    m.add_class::<PyRect>()?;
+    Ok(())
+}
+
+#[pymethods]
 impl ByteTracker {
+    #[new]
     pub fn new(
         frame_rate: usize,
         track_buffer: usize,
@@ -51,8 +64,8 @@ impl ByteTracker {
 
     pub fn update(
         &mut self,
-        objects: impl Iterator<Item = Object>,
-    ) -> Result<Vec<Object>, ByteTrackError> {
+        objects: Vec<PyRef<Object>>,
+    ) -> PyResult<Vec<Object>> {
         self.frame_id += 1;
 
         /* ------------------ Step 1: Get detections ------------------------- */
@@ -64,7 +77,7 @@ impl ByteTracker {
         for obj in objects {
             let strack = STrack::new(
                 obj.get_detection_id(),
-                obj.get_rect(),
+                obj.get_rect().into(),
                 obj.get_prob(),
             );
             if obj.get_prob() >= self.track_thresh {
@@ -270,7 +283,9 @@ impl ByteTracker {
 
         Ok(output_stracks)
     }
+}
 
+impl ByteTracker {
     pub(crate) fn joint_stracks(
         a_tracks: &Vec<STrack>,
         b_tracks: &Vec<STrack>,

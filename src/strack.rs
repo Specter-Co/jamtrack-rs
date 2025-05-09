@@ -84,6 +84,7 @@ impl STrack {
             frame_id: 0,
             start_frame_id: 0,
             tracklet_len: 0,
+            detection_id_last: 0,
         }
     }
 
