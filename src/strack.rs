@@ -2,6 +2,7 @@ use crate::{
     kalman_filter::{KalmanFilter, StateCov, StateMean},
     rect::Rect,
 };
+use core::time::Duration;
 use std::fmt::Debug;
 
 /* ----------------------------------------------------------------------------
@@ -23,8 +24,8 @@ impl Debug for STrack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "STrack {{ track_id: {}, frame_id: {}, start_frame_id: {}, tracklet_len: {}, state: {:?}, is_activated: {}, score: {}, rect: {:?} }}",
-            self.track_id, self.frame_id, self.start_frame_id, self.tracklet_len, self.state, self.is_activated, self.score, self.rect
+            "STrack {{ track_id: {}, timestamp: {:?}, start_timestamp: {:?}, tracklet_len: {}, state: {:?}, is_activated: {}, score: {}, rect: {:?} }}",
+            self.track_id, self.timestamp, self.start_timestamp, self.tracklet_len, self.state, self.is_activated, self.score, self.rect
         )
     }
 }
@@ -39,9 +40,9 @@ pub(crate) struct STrack {
     is_activated: bool,
     score: f32,
     track_id: usize,
-    frame_id: usize,
+    timestamp: Duration,
     detection_id_last: i64,
-    start_frame_id: usize,
+    start_timestamp: Duration,
     tracklet_len: usize,
 }
 
@@ -59,9 +60,9 @@ impl STrack {
             is_activated: false,
             score,
             track_id: 0,
-            frame_id: 0,
+            timestamp: Default::default(),
             detection_id_last: detection_id,
-            start_frame_id: 0,
+            start_timestamp: Default::default(),
             tracklet_len: 0,
         }
     }
@@ -81,8 +82,8 @@ impl STrack {
             is_activated: false,
             score: 0.0,
             track_id: track_id,
-            frame_id: 0,
-            start_frame_id: 0,
+            timestamp: 0,
+            start_timestamp: 0,
             tracklet_len: 0,
         }
     }
@@ -118,13 +119,13 @@ impl STrack {
     }
 
     #[inline(always)]
-    pub(crate) fn get_frame_id(&self) -> usize {
-        return self.frame_id;
+    pub(crate) fn get_timestamp(&self) -> Duration {
+        return self.timestamp;
     }
 
     #[inline(always)]
-    pub(crate) fn get_start_frame_id(&self) -> usize {
-        return self.start_frame_id;
+    pub(crate) fn get_start_timestamp(&self) -> Duration {
+        return self.start_timestamp;
     }
 
     #[inline(always)]
@@ -137,7 +138,7 @@ impl STrack {
         return self.mean[5];
     }
 
-    pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize) {
+    pub(crate) fn activate(&mut self, timestamp: Duration, track_id: usize) {
         self.kalman_filter.initiate(
             &mut self.mean,
             &mut self.covariance,
@@ -147,19 +148,19 @@ impl STrack {
         self.update_rect();
 
         self.state = STrackState::Tracked;
-        if frame_id == 1 {
+        if timestamp == 1 {
             self.is_activated = true;
         }
         self.track_id = track_id;
-        self.frame_id = frame_id;
-        self.start_frame_id = frame_id;
+        self.timestamp = timestamp;
+        self.start_timestamp = timestamp;
         self.tracklet_len = 0;
     }
 
     pub(crate) fn re_activate(
         &mut self,
         new_track: &STrack,
-        frame_id: usize,
+        timestamp: Duration,
         new_track_id: isize,
     ) {
         self.kalman_filter.update(
@@ -178,7 +179,7 @@ impl STrack {
         }
 
         self.detection_id_last = new_track.detection_id_last;
-        self.frame_id = frame_id;
+        self.timestamp = timestamp;
         self.tracklet_len = 0;
     }
 
@@ -191,7 +192,7 @@ impl STrack {
         self.update_rect();
     }
 
-    pub(crate) fn update(&mut self, new_track: &STrack, frame_id: usize) {
+    pub(crate) fn update(&mut self, new_track: &STrack, timestamp: Duration) {
         self.kalman_filter.update(
             &mut self.mean,
             &mut self.covariance,
@@ -203,7 +204,7 @@ impl STrack {
         self.state = STrackState::Tracked;
         self.is_activated = true;
         self.score = new_track.get_score();
-        self.frame_id = frame_id;
+        self.timestamp = timestamp;
         self.detection_id_last = new_track.get_detection_id_last();
         self.tracklet_len += 1;
     }

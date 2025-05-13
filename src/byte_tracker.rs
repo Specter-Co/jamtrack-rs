@@ -5,6 +5,7 @@ use crate::{
     rect::Rect,
     strack::{STrack, STrackState},
 };
+use core::time::Duration;
 use std::{collections::HashMap, vec};
 /* ----------------------------------------------------------------------------
  * ByteTracker
@@ -15,9 +16,8 @@ pub struct ByteTracker {
     track_thresh: f32,
     high_thresh: f32,
     match_thresh: f32,
-    max_time_lost: usize,
+    max_time_lost: Duration,
 
-    frame_id: usize,
     track_id_count: usize,
 
     tracked_stracks: Vec<STrack>,
@@ -37,10 +37,8 @@ impl ByteTracker {
             track_thresh,
             high_thresh,
             match_thresh,
-            max_time_lost: (track_buffer as f32 * frame_rate as f32 / 30.0)
-                as usize,
+            max_time_lost: Duration::from_secs(1),
 
-            frame_id: 0,
             track_id_count: 0,
 
             tracked_stracks: Vec::new(),
@@ -52,9 +50,8 @@ impl ByteTracker {
     pub fn update(
         &mut self,
         objects: impl Iterator<Item = Object>,
+        timestamp: Duration,
     ) -> Result<Vec<Object>, ByteTrackError> {
-        self.frame_id += 1;
-
         /* ------------------ Step 1: Get detections ------------------------- */
 
         // Create new STracks using the result of object detections
@@ -116,14 +113,12 @@ impl ByteTracker {
                 let mut track = strack_pool[idx].clone();
                 let det = &det_stracks[sol as usize];
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(&det, self.frame_id);
+                    track.update(&det, timestamp);
                     current_tracked_stracks.push(track.clone());
                     strack_pool[idx] = track; // update the track
                 } else {
                     track.re_activate(
-                        det,
-                        self.frame_id,
-                        -1, /* defualt value */
+                        det, timestamp, -1, /* defualt value */
                     );
                     refined_stracks.push(track.clone());
                 }
@@ -165,14 +160,12 @@ impl ByteTracker {
                 let mut track = remain_tracked_stracks[idx].clone();
                 let det = &det_low_stracks[sol as usize];
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(det, self.frame_id);
+                    track.update(det, timestamp);
                     current_tracked_stracks.push(track.clone());
                     remain_tracked_stracks[idx] = track; // update the track
                 } else {
                     track.re_activate(
-                        det,
-                        self.frame_id,
-                        -1, /* defulat value */
+                        det, timestamp, -1, /* defulat value */
                     );
                     refined_stracks.push(track.clone());
                 }
@@ -205,7 +198,7 @@ impl ByteTracker {
 
             for &(idx, sol) in matches_idx.iter() {
                 let mut track = non_active_stracks[idx].clone();
-                track.update(&remain_det_stracks[sol as usize], self.frame_id);
+                track.update(&remain_det_stracks[sol as usize], timestamp);
                 current_tracked_stracks.push(track.clone());
             }
 
@@ -222,14 +215,14 @@ impl ByteTracker {
                     continue;
                 }
                 self.track_id_count += 1;
-                track.activate(self.frame_id, self.track_id_count);
+                track.activate(timestamp, self.track_id_count);
                 current_tracked_stracks.push(track.clone());
             }
         }
         /* ------------------ Step 5: Update state ------------------------- */
         for i in 0..self.lost_stracks.len() {
             let lost_track = &self.lost_stracks[i];
-            if self.frame_id - lost_track.get_frame_id() > self.max_time_lost {
+            if timestamp - lost_track.get_timestamp() > self.max_time_lost {
                 let mut track = lost_track.clone();
                 track.mark_as_removed();
                 current_removed_stracks.push(lost_track.clone());
@@ -340,10 +333,10 @@ impl ByteTracker {
         let mut b_overlapping = vec![false; b_stracks.len()];
 
         for &(i, j) in overlapping_combinations.iter() {
-            let timep =
-                a_stracks[i].get_frame_id() - a_stracks[i].get_start_frame_id();
-            let timeq =
-                b_stracks[j].get_frame_id() - b_stracks[j].get_start_frame_id();
+            let timep = a_stracks[i].get_timestamp()
+                - a_stracks[i].get_start_timestamp();
+            let timeq = b_stracks[j].get_timestamp()
+                - b_stracks[j].get_start_timestamp();
             if timep > timeq {
                 b_overlapping[j] = true;
             } else {
