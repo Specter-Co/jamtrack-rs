@@ -148,7 +148,7 @@ impl STrack {
         self.update_rect();
 
         self.state = STrackState::Tracked;
-        if timestamp == 1 {
+        if timestamp != self.start_timestamp {
             self.is_activated = true;
         }
         self.track_id = track_id;
