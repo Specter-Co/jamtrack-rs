@@ -1,6 +1,11 @@
--e git+https://github.com/Specter-Co/jamtrack-rs.git@dea2e8bf0e9269aa9f0dbf37e59c65fdc7ce42f4#egg=jamtrack_rs
 maturin==1.8.3
 mypy==1.15.0
 mypy_extensions==1.1.0
+numpy==2.2.6
+pandas==2.2.3
+python-dateutil==2.9.0.post0
+pytz==2025.2
+six==1.17.0
 tomli==2.2.1
 typing_extensions==4.13.2
+tzdata==2025.2
