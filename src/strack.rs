@@ -107,6 +107,7 @@ impl STrack {
             score: 0.0,
             track_id: track_id,
             frame_id: 0,
+            detection_id_last: 0,
             start_frame_id: 0,
             tracklet_len: 0,
         }

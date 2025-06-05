@@ -110,6 +110,7 @@ impl DetectionReuslt {
 impl Into<jamtrack_rs::object::Object> for DetectionReuslt {
     fn into(self) -> jamtrack_rs::object::Object {
         jamtrack_rs::object::Object::new(
+            0,
             jamtrack_rs::rect::Rect::new(
                 self.x,
                 self.y,
@@ -117,6 +118,7 @@ impl Into<jamtrack_rs::object::Object> for DetectionReuslt {
                 self.height,
             ),
             self.prob,
+            None,
             None,
         )
     }
@@ -188,6 +190,7 @@ impl TrackingResult {
 impl Into<jamtrack_rs::object::Object> for TrackingResult {
     fn into(self) -> jamtrack_rs::object::Object {
         jamtrack_rs::object::Object::new(
+            0,
             jamtrack_rs::rect::Rect::new(
                 self.x,
                 self.y,
@@ -195,6 +198,7 @@ impl Into<jamtrack_rs::object::Object> for TrackingResult {
                 self.height,
             ),
             0.0,
+            None,
             None,
         )
     }
@@ -233,6 +237,17 @@ fn test_byte_track_with_yolox() {
         0.5, /* track thresh */
         0.6, /* high_thresh */
         0.8, /* mathc_thresh */
+        0.5,  /* low_conf_match_thresh */
+        1. / 20., /* kalman_std_weight_pos */
+        1. / 160., /* kalman_std_weight_vel */
+        1. / 20., /* kalman_std_weight_position_meas */
+        1. / 20., /* kalman_std_weight_position_mot */
+        1. / 160., /* kalman_std_weight_velocity_mot */
+        1e-2, /* kalman_std_aspect_ratio_init */
+        1e-5, /* kalman_std_d_aspect_ratio_init */
+        1e-2, /* kalman_std_aspect_ratio_mot */
+        1e-5, /* kalman_std_d_aspect_ratio_mot */
+        1e-1, /* kalman_std_aspect_ratio_meas */
     );
 
     for frame_id in 0..detection_results.len() {
