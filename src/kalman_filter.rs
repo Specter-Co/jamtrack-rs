@@ -24,8 +24,10 @@ pub(crate) struct KalmanFilter {
     std_weight_position_meas: f32,
     std_weight_position_mot: f32,
     std_weight_velocity_mot: f32,
-    std_aspect_ratio: f32,
-    std_d_aspect_ratio: f32,
+    std_aspect_ratio_init: f32,
+    std_d_aspect_ratio_init: f32,
+    std_aspect_ratio_mot: f32,
+    std_d_aspect_ratio_mot: f32,
     std_aspect_ratio_meas: f32,
     motion_mat: SMatrix<f32, 8, 8>, // 8x8
     update_mat: SMatrix<f32, 4, 8>, // 4x8
@@ -38,8 +40,10 @@ impl KalmanFilter {
         std_weight_position_meas: f32,
         std_weight_position_mot: f32,
         std_weight_velocity_mot: f32,
-        std_aspect_ratio: f32,
-        std_d_aspect_ratio: f32,
+        std_aspect_ratio_init: f32,
+        std_d_aspect_ratio_init: f32,
+        std_aspect_ratio_mot: f32,
+        std_d_aspect_ratio_mot: f32,
         std_aspect_ratio_meas: f32,
     ) -> Self {
         let ndim = 4;
@@ -67,8 +71,10 @@ impl KalmanFilter {
             std_weight_position_meas,
             std_weight_position_mot,
             std_weight_velocity_mot,
-            std_aspect_ratio,
-            std_d_aspect_ratio,
+            std_aspect_ratio_init,
+            std_d_aspect_ratio_init,
+            std_aspect_ratio_mot,
+            std_d_aspect_ratio_mot,
             std_aspect_ratio_meas,
             motion_mat,
             update_mat,
@@ -90,11 +96,11 @@ impl KalmanFilter {
         let mesure_val = measurement[(0, 3)];
         std[0] = 2.0 * self.std_weight_position * mesure_val;
         std[1] = 2.0 * self.std_weight_position * mesure_val;
-        std[2] = self.std_aspect_ratio;
+        std[2] = self.std_aspect_ratio_init;
         std[3] = 2.0 * self.std_weight_position * mesure_val;
         std[4] = 10.0 * self.std_weight_velocity * mesure_val;
         std[5] = 10.0 * self.std_weight_velocity * mesure_val;
-        std[6] = self.std_d_aspect_ratio;
+        std[6] = self.std_d_aspect_ratio_init;
         std[7] = 10.0 * self.std_weight_velocity * mesure_val;
 
         let tmp = std.component_mul(&std);
@@ -111,11 +117,11 @@ impl KalmanFilter {
 
         std[0] = self.std_weight_position_mot * mean[(0, 3)];
         std[1] = self.std_weight_position_mot * mean[(0, 3)];
-        std[2] = self.std_aspect_ratio;
+        std[2] = self.std_aspect_ratio_mot;
         std[3] = self.std_weight_position_mot * mean[(0, 3)];
         std[4] = self.std_weight_velocity_mot * mean[(0, 3)];
         std[5] = self.std_weight_velocity_mot * mean[(0, 3)];
-        std[6] = self.std_d_aspect_ratio;
+        std[6] = self.std_d_aspect_ratio_mot;
         std[7] = self.std_weight_velocity_mot * mean[(0, 3)];
 
         let tmp = std.component_mul(&std);

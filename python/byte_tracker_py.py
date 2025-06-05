@@ -18,8 +18,10 @@ class ByteTrackerPy:
         kalman_std_weight_position_meas: float = 1. /20.,
         kalman_std_weight_position_mot: float = 1. / 20.,
         kalman_std_weight_velocity_mot: float = 1. / 160.,
-        kalman_std_aspect_ratio: float = 1e-2,
-        kalman_std_d_aspect_ratio: float = 1e-5,
+        kalman_std_aspect_ratio_init: float = 1e-2,
+        kalman_std_d_aspect_ratio_init: float = 1e-5,
+        kalman_std_aspect_ratio_mot: float = 1e-2,
+        kalman_std_d_aspect_ratio_mot: float = 1e-5,
         kalman_std_aspect_ratio_meas: float = 1e-1,
     ):
 
@@ -36,8 +38,10 @@ class ByteTrackerPy:
             kalman_std_weight_position_meas=kalman_std_weight_position_meas,
             kalman_std_weight_position_mot=kalman_std_weight_position_mot,
             kalman_std_weight_velocity_mot=kalman_std_weight_velocity_mot,
-            kalman_std_aspect_ratio=kalman_std_aspect_ratio,
-            kalman_std_d_aspect_ratio=kalman_std_d_aspect_ratio,
+            kalman_std_aspect_ratio_init=kalman_std_aspect_ratio_init,
+            kalman_std_d_aspect_ratio_init=kalman_std_d_aspect_ratio_init,
+            kalman_std_aspect_ratio_mot=kalman_std_aspect_ratio_mot,
+            kalman_std_d_aspect_ratio_mot=kalman_std_d_aspect_ratio_mot,
             kalman_std_aspect_ratio_meas=kalman_std_aspect_ratio_meas,
         )
     

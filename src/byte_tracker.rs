@@ -8,6 +8,7 @@ use crate::{
     strack::{STrack, STrackState},
 };
 use std::{collections::HashMap, vec};
+use std::f32::consts::PI;
 
 /* ----------------------------------------------------------------------------
  * ByteTracker
@@ -24,8 +25,10 @@ pub struct ByteTracker {
     kalman_std_weight_position_meas: f32,
     kalman_std_weight_position_mot: f32,
     kalman_std_weight_velocity_mot: f32,
-    kalman_std_aspect_ratio: f32,
-    kalman_std_d_aspect_ratio: f32,
+    kalman_std_aspect_ratio_init: f32,
+    kalman_std_d_aspect_ratio_init: f32,
+    kalman_std_aspect_ratio_mot: f32,
+    kalman_std_d_aspect_ratio_mot: f32,
     kalman_std_aspect_ratio_meas: f32,
     max_time_lost: usize,
 
@@ -60,8 +63,10 @@ impl ByteTracker {
         kalman_std_weight_position_meas: f32,
         kalman_std_weight_position_mot: f32,
         kalman_std_weight_velocity_mot: f32,
-        kalman_std_aspect_ratio: f32,
-        kalman_std_d_aspect_ratio: f32,
+        kalman_std_aspect_ratio_init: f32,
+        kalman_std_d_aspect_ratio_init: f32,
+        kalman_std_aspect_ratio_mot: f32,
+        kalman_std_d_aspect_ratio_mot: f32,
         kalman_std_aspect_ratio_meas: f32,
     ) -> Self {
         Self {
@@ -74,8 +79,10 @@ impl ByteTracker {
             kalman_std_weight_position_meas,
             kalman_std_weight_position_mot,
             kalman_std_weight_velocity_mot,
-            kalman_std_aspect_ratio,
-            kalman_std_d_aspect_ratio,
+            kalman_std_aspect_ratio_init,
+            kalman_std_d_aspect_ratio_init,
+            kalman_std_aspect_ratio_mot,
+            kalman_std_d_aspect_ratio_mot,
             kalman_std_aspect_ratio_meas,
             max_time_lost: (track_buffer as f32 * frame_rate as f32 / 30.0)
                 as usize,
@@ -111,8 +118,10 @@ impl ByteTracker {
                 self.kalman_std_weight_position_meas,
                 self.kalman_std_weight_position_mot,
                 self.kalman_std_weight_velocity_mot,
-                self.kalman_std_aspect_ratio,
-                self.kalman_std_d_aspect_ratio,
+                self.kalman_std_aspect_ratio_init,
+                self.kalman_std_d_aspect_ratio_init,
+                self.kalman_std_aspect_ratio_mot,
+                self.kalman_std_d_aspect_ratio_mot,
                 self.kalman_std_aspect_ratio_meas,
             );
             if obj.get_prob() >= self.track_thresh {
@@ -500,6 +509,66 @@ impl ByteTracker {
 
         Ok((matches, a_unmatched, b_unmatched))
     }
+
+    // /// Computes the CIoU between two lists of Rect<f32> objects
+    // pub fn compute_ciou(a_rects: &Vec<Rect<f32>>, b_rects: &Vec<Rect<f32>>) -> Vec<Vec<f32>> {
+    //     let mut cious = vec![vec![0.0; b_rects.len()]; a_rects.len()];
+    //     if a_rects.is_empty() || b_rects.is_empty() {
+    //         return cious;
+    //     }
+
+    //     for (ai, a) in a_rects.iter().enumerate() {
+    //         let a_xyah = a.get_xyah();
+    //         let ax = a_xyah[(0, 0)];
+    //         let ay = a_xyah[(0, 1)];
+    //         let ar = a_xyah[(0, 2)];
+    //         let ah = a_xyah[(0, 3)];
+    //         let aw = ar * ah;
+
+    //         for (bi, b) in b_rects.iter().enumerate() {
+    //             let iou = a.calc_iou(b);
+
+    //             let b_xyah = b.get_xyah();
+    //             let bx = b_xyah[(0, 0)];
+    //             let by = b_xyah[(0, 1)];
+    //             let br = b_xyah[(0, 2)];
+    //             let bh = b_xyah[(0, 3)];
+    //             let bw = br * bh;
+
+    //             // Center distance squared
+    //             let center_dist_sq = (ax - bx).powi(2) + (ay - by).powi(2);
+
+    //             // Enclosing box (in tlbr)
+    //             let a_x1 = a.x();
+    //             let a_y1 = a.y();
+    //             let a_x2 = a.x() + a.width();
+    //             let a_y2 = a.y() + a.height();
+
+    //             let b_x1 = b.x();
+    //             let b_y1 = b.y();
+    //             let b_x2 = b.x() + b.width();
+    //             let b_y2 = b.y() + b.height();
+
+    //             let enclose_x1 = a_x1.min(b_x1);
+    //             let enclose_y1 = a_y1.min(b_y1);
+    //             let enclose_x2 = a_x2.max(b_x2);
+    //             let enclose_y2 = a_y2.max(b_y2);
+
+    //             let enclose_diag_sq =
+    //                 (enclose_x2 - enclose_x1).powi(2) + (enclose_y2 - enclose_y1).powi(2);
+
+    //             // Aspect ratio penalty
+    //             let v = (4.0 / (PI * PI)) * (aw.atan2(ah) - bw.atan2(bh)).powi(2);
+    //             let alpha = if iou > 0.0 { v / (1.0 - iou + v) } else { 0.0 };
+
+    //             // Final CIoU score
+    //             let ciou = iou - center_dist_sq / (enclose_diag_sq + 1e-7) - alpha * v;
+    //             cious[ai][bi] = ciou;
+    //         }
+    //     }
+
+    //     cious
+    // }
 
     pub fn calc_ious(
         a_rects: &Vec<Rect<f32>>,

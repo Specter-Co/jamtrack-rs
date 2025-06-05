@@ -62,8 +62,10 @@ class ByteTracker:
         kalman_std_weight_position_meas: float,
         kalman_std_weight_position_mot: float,
         kalman_std_weight_velocity_mot: float,
-        kalman_std_aspect_ratio: float,
-        kalman_std_d_aspect_ratio: float,
+        kalman_std_aspect_ratio_init: float,
+        kalman_std_d_aspect_ratio_init: float,
+        kalman_std_aspect_ratio_mot: float,
+        kalman_std_d_aspect_ratio_mot: float,
         kalman_std_aspect_ratio_meas: float,
     ) -> None: ...
     def update(self, objects: List[Object]) -> List[Object]: ...
