@@ -55,6 +55,16 @@ class ByteTracker:
         track_buffer: int,
         track_thresh: float,
         high_thresh: float,
-        match_thresh: float
+        match_thresh: float,
+        low_conf_track_thresh: float,
+        kalman_std_weight_pos: float,
+        kalman_std_weight_vel: float,
+        kalman_std_weight_position_meas: float,
+        kalman_std_weight_position_mot: float,
+        kalman_std_weight_velocity_mot: float,
+        kalman_std_aspect_ratio: float,
+        kalman_std_d_aspect_ratio: float,
+        kalman_std_aspect_ratio_meas: float,
     ) -> None: ...
     def update(self, objects: List[Object]) -> List[Object]: ...
+    def get_lost_tracks(self) -> List[Object]: ...

@@ -21,6 +21,12 @@ pub(crate) type StateHCov = SMatrix<f32, 4, 4>;
 pub(crate) struct KalmanFilter {
     std_weight_position: f32,
     std_weight_velocity: f32,
+    std_weight_position_meas: f32,
+    std_weight_position_mot: f32,
+    std_weight_velocity_mot: f32,
+    std_aspect_ratio: f32,
+    std_d_aspect_ratio: f32,
+    std_aspect_ratio_meas: f32,
     motion_mat: SMatrix<f32, 8, 8>, // 8x8
     update_mat: SMatrix<f32, 4, 8>, // 4x8
 }
@@ -29,6 +35,12 @@ impl KalmanFilter {
     pub(crate) fn new(
         std_weight_position: f32,
         std_weight_velocity: f32,
+        std_weight_position_meas: f32,
+        std_weight_position_mot: f32,
+        std_weight_velocity_mot: f32,
+        std_aspect_ratio: f32,
+        std_d_aspect_ratio: f32,
+        std_aspect_ratio_meas: f32,
     ) -> Self {
         let ndim = 4;
         let dt = 1.0;
@@ -52,6 +64,12 @@ impl KalmanFilter {
         return Self {
             std_weight_position,
             std_weight_velocity,
+            std_weight_position_meas,
+            std_weight_position_mot,
+            std_weight_velocity_mot,
+            std_aspect_ratio,
+            std_d_aspect_ratio,
+            std_aspect_ratio_meas,
             motion_mat,
             update_mat,
         };
@@ -72,11 +90,11 @@ impl KalmanFilter {
         let mesure_val = measurement[(0, 3)];
         std[0] = 2.0 * self.std_weight_position * mesure_val;
         std[1] = 2.0 * self.std_weight_position * mesure_val;
-        std[2] = 1e-2;
+        std[2] = self.std_aspect_ratio;
         std[3] = 2.0 * self.std_weight_position * mesure_val;
         std[4] = 10.0 * self.std_weight_velocity * mesure_val;
         std[5] = 10.0 * self.std_weight_velocity * mesure_val;
-        std[6] = 1e-5;
+        std[6] = self.std_d_aspect_ratio;
         std[7] = 10.0 * self.std_weight_velocity * mesure_val;
 
         let tmp = std.component_mul(&std);
@@ -90,14 +108,15 @@ impl KalmanFilter {
         covariance: &mut StateCov,
     ) {
         let mut std = SMatrix::<f32, 1, 8>::zeros();
-        std[0] = self.std_weight_position * mean[(0, 3)];
-        std[1] = self.std_weight_position * mean[(0, 3)];
-        std[2] = 1e-2;
-        std[3] = self.std_weight_position * mean[(0, 3)];
-        std[4] = self.std_weight_velocity * mean[(0, 3)];
-        std[5] = self.std_weight_velocity * mean[(0, 3)];
-        std[6] = 1e-5;
-        std[7] = self.std_weight_velocity * mean[(0, 3)];
+
+        std[0] = self.std_weight_position_mot * mean[(0, 3)];
+        std[1] = self.std_weight_position_mot * mean[(0, 3)];
+        std[2] = self.std_aspect_ratio;
+        std[3] = self.std_weight_position_mot * mean[(0, 3)];
+        std[4] = self.std_weight_velocity_mot * mean[(0, 3)];
+        std[5] = self.std_weight_velocity_mot * mean[(0, 3)];
+        std[6] = self.std_d_aspect_ratio;
+        std[7] = self.std_weight_velocity_mot * mean[(0, 3)];
 
         let tmp = std.component_mul(&std);
         let motion_cov = SMatrix::<f32, 8, 8>::from_diagonal(&tmp.transpose());
@@ -143,10 +162,10 @@ impl KalmanFilter {
         covariance: &StateCov,           // 8x8
     ) {
         let std = SMatrix::<f32, 1, 4>::from_iterator([
-            self.std_weight_position * mean[(0, 3)],
-            self.std_weight_position * mean[(0, 3)],
-            1e-1,
-            self.std_weight_position * mean[(0, 3)],
+            self.std_weight_position_meas * mean[(0, 3)],
+            self.std_weight_position_meas * mean[(0, 3)],
+            self.std_aspect_ratio_meas,
+            self.std_weight_position_meas * mean[(0, 3)],
         ]);
 
         // update_mat: 4x8, mean: 1x8
