@@ -8,18 +8,33 @@ use std::fmt::Debug;
 
 #[derive(Debug, Clone)]
 pub struct Object {
-    rect: Rect<f32>,
+    detection_id: i64,
     prob: f32,
+    rect: Rect<f32>,
     track_id: Option<usize>,
+    track_vel_xy: Option<(f32, f32)>,
 }
 
 impl Object {
-    pub fn new(rect: Rect<f32>, prob: f32, track_id: Option<usize>) -> Self {
+    pub fn new(
+        detection_id: i64,
+        rect: Rect<f32>,
+        prob: f32,
+        track_id: Option<usize>,
+        track_vel_xy: Option<(f32, f32)>,
+    ) -> Self {
         Self {
-            rect,
+            detection_id,
             prob,
+            rect,
             track_id,
+            track_vel_xy,
         }
+    }
+
+    #[inline(always)]
+    pub fn get_detection_id(&self) -> i64 {
+        self.detection_id
     }
 
     #[inline(always)]
@@ -56,14 +71,21 @@ impl Object {
     pub fn get_track_id(&self) -> Option<usize> {
         self.track_id
     }
+
+    #[inline(always)]
+    pub fn get_track_vel_xy(&self) -> Option<(f32, f32)> {
+        self.track_vel_xy
+    }
 }
 
 impl From<STrack> for Object {
     fn from(strack: STrack) -> Self {
         Object::new(
+            strack.get_detection_id_last(),
             strack.get_rect(),
             strack.get_score(),
             Some(strack.get_track_id()),
+            Some((strack.get_vel_x(), strack.get_vel_y())),
         )
     }
 }
@@ -71,9 +93,11 @@ impl From<STrack> for Object {
 impl From<&STrack> for Object {
     fn from(strack: &STrack) -> Self {
         Object::new(
+            strack.get_detection_id_last(),
             strack.get_rect(),
             strack.get_score(),
             Some(strack.get_track_id()),
+            Some((strack.get_vel_x(), strack.get_vel_y())),
         )
     }
 }

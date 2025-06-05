@@ -40,12 +40,13 @@ pub(crate) struct STrack {
     score: f32,
     track_id: usize,
     frame_id: usize,
+    detection_id_last: i64,
     start_frame_id: usize,
     tracklet_len: usize,
 }
 
 impl STrack {
-    pub(crate) fn new(rect: Rect<f32>, score: f32) -> Self {
+    pub(crate) fn new(detection_id: i64, rect: Rect<f32>, score: f32) -> Self {
         let kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160.);
         let mean = StateMean::zeros();
         let covariance = StateCov::zeros();
@@ -59,6 +60,7 @@ impl STrack {
             score,
             track_id: 0,
             frame_id: 0,
+            detection_id_last: detection_id,
             start_frame_id: 0,
             tracklet_len: 0,
         }
@@ -83,6 +85,11 @@ impl STrack {
             start_frame_id: 0,
             tracklet_len: 0,
         }
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_detection_id_last(&self) -> i64 {
+        self.detection_id_last
     }
 
     #[inline(always)]
@@ -118,6 +125,16 @@ impl STrack {
     #[inline(always)]
     pub(crate) fn get_start_frame_id(&self) -> usize {
         return self.start_frame_id;
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_vel_x(&self) -> f32 {
+        return self.mean[4];
+    }
+
+    #[inline(always)]
+    pub(crate) fn get_vel_y(&self) -> f32 {
+        return self.mean[5];
     }
 
     pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize) {
@@ -159,6 +176,8 @@ impl STrack {
         if 0 <= new_track_id {
             self.track_id = new_track_id as usize;
         }
+
+        self.detection_id_last = new_track.detection_id_last;
         self.frame_id = frame_id;
         self.tracklet_len = 0;
     }
@@ -185,6 +204,7 @@ impl STrack {
         self.is_activated = true;
         self.score = new_track.get_score();
         self.frame_id = frame_id;
+        self.detection_id_last = new_track.get_detection_id_last();
         self.tracklet_len += 1;
     }
 
