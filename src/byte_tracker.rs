@@ -16,6 +16,7 @@ pub struct ByteTracker {
     high_thresh: f32,
     match_thresh: f32,
     low_conf_match_thresh: f32,
+    track_activation_iou: f32,
     kalman_std_weight_pos: f32,
     kalman_std_weight_vel: f32,
     kalman_std_weight_position_meas: f32,
@@ -44,6 +45,7 @@ impl ByteTracker {
         high_thresh: f32,
         match_thresh: f32,
         low_conf_match_thresh: f32,
+        track_activation_iou: f32,
         kalman_std_weight_pos: f32,
         kalman_std_weight_vel: f32,
         kalman_std_weight_position_meas: f32,
@@ -60,6 +62,7 @@ impl ByteTracker {
             high_thresh,
             match_thresh,
             low_conf_match_thresh,
+            track_activation_iou,
             kalman_std_weight_pos,
             kalman_std_weight_vel,
             kalman_std_weight_position_meas,
@@ -248,7 +251,7 @@ impl ByteTracker {
                     &iou_distance,
                     non_active_stracks.len(),
                     remain_det_stracks.len(),
-                    0.7,
+                    self.track_activation_iou,
                 )?;
 
             for &(idx, sol) in matches_idx.iter() {

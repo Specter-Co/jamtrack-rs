@@ -238,6 +238,7 @@ fn test_byte_track_with_yolox() {
         0.6, /* high_thresh */
         0.8, /* mathc_thresh */
         0.5,  /* low_conf_match_thresh */
+        0.7, /* track_activation_iou */
         1. / 20., /* kalman_std_weight_pos */
         1. / 160., /* kalman_std_weight_vel */
         1. / 20., /* kalman_std_weight_position_meas */
