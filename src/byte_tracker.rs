@@ -15,6 +15,18 @@ pub struct ByteTracker {
     track_thresh: f32,
     high_thresh: f32,
     match_thresh: f32,
+    low_conf_match_thresh: f32,
+    track_activation_iou: f32,
+    kalman_std_weight_pos: f32,
+    kalman_std_weight_vel: f32,
+    kalman_std_weight_position_meas: f32,
+    kalman_std_weight_position_mot: f32,
+    kalman_std_weight_velocity_mot: f32,
+    kalman_std_aspect_ratio_init: f32,
+    kalman_std_d_aspect_ratio_init: f32,
+    kalman_std_aspect_ratio_mot: f32,
+    kalman_std_d_aspect_ratio_mot: f32,
+    kalman_std_aspect_ratio_meas: f32,
     max_time_lost: usize,
 
     frame_id: usize,
@@ -32,11 +44,35 @@ impl ByteTracker {
         track_thresh: f32,
         high_thresh: f32,
         match_thresh: f32,
+        low_conf_match_thresh: f32,
+        track_activation_iou: f32,
+        kalman_std_weight_pos: f32,
+        kalman_std_weight_vel: f32,
+        kalman_std_weight_position_meas: f32,
+        kalman_std_weight_position_mot: f32,
+        kalman_std_weight_velocity_mot: f32,
+        kalman_std_aspect_ratio_init: f32,
+        kalman_std_d_aspect_ratio_init: f32,
+        kalman_std_aspect_ratio_mot: f32,
+        kalman_std_d_aspect_ratio_mot: f32,
+        kalman_std_aspect_ratio_meas: f32,
     ) -> Self {
         Self {
             track_thresh,
             high_thresh,
             match_thresh,
+            low_conf_match_thresh,
+            track_activation_iou,
+            kalman_std_weight_pos,
+            kalman_std_weight_vel,
+            kalman_std_weight_position_meas,
+            kalman_std_weight_position_mot,
+            kalman_std_weight_velocity_mot,
+            kalman_std_aspect_ratio_init,
+            kalman_std_d_aspect_ratio_init,
+            kalman_std_aspect_ratio_mot,
+            kalman_std_d_aspect_ratio_mot,
+            kalman_std_aspect_ratio_meas,
             max_time_lost: (track_buffer as f32 * frame_rate as f32 / 30.0)
                 as usize,
 
@@ -66,6 +102,16 @@ impl ByteTracker {
                 obj.get_detection_id(),
                 obj.get_rect(),
                 obj.get_prob(),
+                self.kalman_std_weight_pos,
+                self.kalman_std_weight_vel,
+                self.kalman_std_weight_position_meas,
+                self.kalman_std_weight_position_mot,
+                self.kalman_std_weight_velocity_mot,
+                self.kalman_std_aspect_ratio_init,
+                self.kalman_std_d_aspect_ratio_init,
+                self.kalman_std_aspect_ratio_mot,
+                self.kalman_std_d_aspect_ratio_mot,
+                self.kalman_std_aspect_ratio_meas,
             );
             if obj.get_prob() >= self.track_thresh {
                 det_stracks.push(strack);
@@ -86,12 +132,17 @@ impl ByteTracker {
             }
         }
 
-        let mut strack_pool =
-            Self::joint_stracks(&active_stracks, &self.lost_stracks);
         // Predict the current location with KF
-        for strack in strack_pool.iter_mut() {
-            strack.predict();
+        for track in active_stracks.iter_mut() {
+            track.predict();
         }
+        let mut original_lost_stracks = Vec::new();
+        for track in self.lost_stracks.iter() {
+            let mut cloned = track.clone();
+            cloned.predict();
+            original_lost_stracks.push(cloned);
+        }
+        let mut strack_pool = Self::joint_stracks(&active_stracks, &original_lost_stracks);
 
         /* ------------------ Step 2: First association with IoU ------------------------- */
         let mut current_tracked_stracks = Vec::new();
@@ -123,7 +174,7 @@ impl ByteTracker {
                     track.re_activate(
                         det,
                         self.frame_id,
-                        -1, /* defualt value */
+                        -1, /* default value */
                     );
                     refined_stracks.push(track.clone());
                 }
@@ -156,7 +207,7 @@ impl ByteTracker {
                     &iou_distance,
                     remain_tracked_stracks.len(),
                     det_low_stracks.len(),
-                    0.5,
+                    self.low_conf_match_thresh,
                 )?;
 
             for (idx, sol) in matches_idx {
@@ -172,7 +223,7 @@ impl ByteTracker {
                     track.re_activate(
                         det,
                         self.frame_id,
-                        -1, /* defulat value */
+                        -1, /* default value */
                     );
                     refined_stracks.push(track.clone());
                 }
@@ -200,7 +251,7 @@ impl ByteTracker {
                     &iou_distance,
                     non_active_stracks.len(),
                     remain_det_stracks.len(),
-                    0.7,
+                    self.track_activation_iou,
                 )?;
 
             for &(idx, sol) in matches_idx.iter() {
@@ -240,7 +291,7 @@ impl ByteTracker {
 
         // calculate the number of removed objects
         let subtrack_stracks =
-            Self::sub_stracks(&self.lost_stracks, &self.tracked_stracks);
+            Self::sub_stracks(&original_lost_stracks, &self.tracked_stracks);
         let joint_stracks =
             Self::joint_stracks(&subtrack_stracks, &current_lost_stracks);
         self.lost_stracks =

@@ -46,8 +46,33 @@ pub(crate) struct STrack {
 }
 
 impl STrack {
-    pub(crate) fn new(detection_id: i64, rect: Rect<f32>, score: f32) -> Self {
-        let kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160.);
+    pub(crate) fn new(
+        detection_id: i64, 
+        rect: Rect<f32>, 
+        score: f32,
+        std_weight_pos: f32, 
+        std_weight_vel: f32,
+        std_weight_position_meas: f32,
+        std_weight_position_mot: f32,
+        std_weight_velocity_mot: f32,
+        std_aspect_ratio_init: f32,
+        std_d_aspect_ratio_init: f32,
+        std_aspect_ratio_mot: f32,
+        std_d_aspect_ratio_mot: f32,
+        std_aspect_ratio_meas: f32,
+    ) -> Self {
+        let kalman_filter = KalmanFilter::new(
+            std_weight_pos,
+            std_weight_vel,
+            std_weight_position_meas,
+            std_weight_position_mot, 
+            std_weight_velocity_mot,
+            std_aspect_ratio_init,
+            std_d_aspect_ratio_init,
+            std_aspect_ratio_mot,
+            std_d_aspect_ratio_mot,
+            std_aspect_ratio_meas,
+        );
         let mean = StateMean::zeros();
         let covariance = StateCov::zeros();
         Self {
@@ -69,7 +94,7 @@ impl STrack {
     // This function is used in the test_joint_strack function in src/test_byte_tracker.rs
     #[cfg(test)]
     pub(crate) fn dummy_strack(track_id: usize) -> Self {
-        let kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160.);
+        let kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160., 1.0 / 20., 1.0 / 20., 1.0 / 160., 1e-2, 1e-5, 1e-2, 1e-5, 1e-1);
         let mean = StateMean::zeros();
         let covariance = StateCov::zeros();
         Self {
@@ -82,6 +107,7 @@ impl STrack {
             score: 0.0,
             track_id: track_id,
             frame_id: 0,
+            detection_id_last: 0,
             start_frame_id: 0,
             tracklet_len: 0,
         }
