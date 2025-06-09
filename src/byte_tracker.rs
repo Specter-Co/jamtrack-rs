@@ -6,6 +6,7 @@ use crate::{
     strack::{STrack, STrackState},
 };
 use std::{collections::HashMap, vec};
+use std::f32::consts::PI;
 /* ----------------------------------------------------------------------------
  * ByteTracker
  * ---------------------------------------------------------------------------- */
@@ -14,9 +15,10 @@ use std::{collections::HashMap, vec};
 pub struct ByteTracker {
     track_thresh: f32,
     high_thresh: f32,
-    match_thresh: f32,
-    low_conf_match_thresh: f32,
-    track_activation_iou: f32,
+    use_ciou: bool,
+    high_conf_match_min_iou: f32,
+    low_conf_match_min_iou: f32,
+    track_activation_min_iou: f32,
     kalman_std_weight_pos: f32,
     kalman_std_weight_vel: f32,
     kalman_std_weight_position_meas: f32,
@@ -43,9 +45,10 @@ impl ByteTracker {
         track_buffer: usize,
         track_thresh: f32,
         high_thresh: f32,
-        match_thresh: f32,
-        low_conf_match_thresh: f32,
-        track_activation_iou: f32,
+        use_ciou: bool,
+        high_conf_match_min_iou: f32,
+        low_conf_match_min_iou: f32,
+        track_activation_min_iou: f32,
         kalman_std_weight_pos: f32,
         kalman_std_weight_vel: f32,
         kalman_std_weight_position_meas: f32,
@@ -60,9 +63,10 @@ impl ByteTracker {
         Self {
             track_thresh,
             high_thresh,
-            match_thresh,
-            low_conf_match_thresh,
-            track_activation_iou,
+            use_ciou,
+            high_conf_match_min_iou,
+            low_conf_match_min_iou,
+            track_activation_min_iou,
             kalman_std_weight_pos,
             kalman_std_weight_vel,
             kalman_std_weight_position_meas,
@@ -142,6 +146,7 @@ impl ByteTracker {
             cloned.predict();
             original_lost_stracks.push(cloned);
         }
+        // Step 3: Combine predicted active and lost tracks
         let mut strack_pool = Self::joint_stracks(&active_stracks, &original_lost_stracks);
 
         /* ------------------ Step 2: First association with IoU ------------------------- */
@@ -152,14 +157,13 @@ impl ByteTracker {
 
         {
             let iou_distance =
-                Self::calc_iou_distance(&strack_pool, &det_stracks);
-
+                Self::calc_distance(&strack_pool, &det_stracks, self.use_ciou);
             let (matches_idx, unmatched_track_idx, unmatched_detection_idx) =
                 self.linear_assignment(
                     &iou_distance,
                     strack_pool.len(),
                     det_stracks.len(),
-                    self.match_thresh,
+                    1.0 - self.high_conf_match_min_iou,
                 )?;
 
             for (idx, sol) in matches_idx {
@@ -197,9 +201,10 @@ impl ByteTracker {
         /* ------------------ Step 3: Second association using low score dets ------------------------- */
         let mut current_lost_stracks = Vec::new();
         {
-            let iou_distance = Self::calc_iou_distance(
+            let iou_distance = Self::calc_distance(
                 &remain_tracked_stracks,
                 &det_low_stracks,
+                self.use_ciou,
             );
 
             let (matches_idx, unmatched_track_idx, _) = self
@@ -207,7 +212,7 @@ impl ByteTracker {
                     &iou_distance,
                     remain_tracked_stracks.len(),
                     det_low_stracks.len(),
-                    self.low_conf_match_thresh,
+                    1.0 - self.low_conf_match_min_iou,
                 )?;
 
             for (idx, sol) in matches_idx {
@@ -241,9 +246,10 @@ impl ByteTracker {
         /* ------------------ Step 4: Init new stracks ------------------------- */
         let mut current_removed_stracks = Vec::new();
         {
-            let iou_distance = Self::calc_iou_distance(
+            let iou_distance = Self::calc_distance(
                 &non_active_stracks,
                 &remain_det_stracks,
+                self.use_ciou,
             );
 
             let (matches_idx, unmatch_unconfirmed_idx, unmatched_detection_idx) =
@@ -251,7 +257,7 @@ impl ByteTracker {
                     &iou_distance,
                     non_active_stracks.len(),
                     remain_det_stracks.len(),
-                    self.track_activation_iou,
+                    1.0 - self.track_activation_min_iou,
                 )?;
 
             for &(idx, sol) in matches_idx.iter() {
@@ -376,7 +382,7 @@ impl ByteTracker {
         let mut a_res = Vec::new();
         let mut b_res = Vec::new();
 
-        let ious = Self::calc_iou_distance(a_stracks, b_stracks);
+        let ious = Self::calc_distance(a_stracks, b_stracks, false);
         let mut overlapping_combinations = Vec::new();
 
         for (i, row) in ious.iter().enumerate() {
@@ -488,6 +494,55 @@ impl ByteTracker {
         Ok((matches, a_unmatched, b_unmatched))
     }
 
+    // Computes the CIoU between two lists of Rect<f32> objects
+    pub fn calc_cious(a_rects: &Vec<Rect<f32>>, b_rects: &Vec<Rect<f32>>) -> Vec<Vec<f32>> {
+        let mut cious = vec![vec![0.0; b_rects.len()]; a_rects.len()];
+        if a_rects.is_empty() || b_rects.is_empty() {
+            return cious;
+        }
+
+        for (ai, a) in a_rects.iter().enumerate() {
+            let ax1 = a.x();
+            let ay1 = a.y();
+            let aw = a.width();
+            let ah = a.height();
+            let ax2 = ax1 + aw;
+            let ay2 = ay1 + ah;
+
+            for (bi, b) in b_rects.iter().enumerate() {
+                let iou = b.calc_iou(a);
+
+                let bx1 = b.x();
+                let by1 = b.y();
+                let bw = b.width();
+                let bh = b.height();
+                let bx2 = bx1 + bw;
+                let by2 = by1 + bh;
+
+                // Center distance squared
+                let center_dist_sq = (ax1 - bx1).powi(2) + (ay1 - by1).powi(2);
+
+                let enclose_x1 = ax1.min(bx1);
+                let enclose_y1 = ay1.min(by1);
+                let enclose_x2 = ax2.max(bx2);
+                let enclose_y2 = ay2.max(by2);
+
+                let enclose_diag_sq =
+                    (enclose_x2 - enclose_x1).powi(2) + (enclose_y2 - enclose_y1).powi(2);
+
+                // Aspect ratio penalty
+                let v = (4.0 / (PI * PI)) * (aw.atan2(ah) - bw.atan2(bh)).powi(2);
+                let alpha = if iou > 0.0 { v / (1.0 - iou + v) } else { 0.0 };
+
+                // Final CIoU score
+                let ciou = iou - center_dist_sq / (enclose_diag_sq + 1e-7) - alpha * v;
+                cious[ai][bi] = (ciou.clamp(-1.0, 1.0) + 1.0) / 2.0;
+            }
+        }
+
+        cious
+    }
+
     pub fn calc_ious(
         a_rects: &Vec<Rect<f32>>,
         b_rects: &Vec<Rect<f32>>,
@@ -506,9 +561,10 @@ impl ByteTracker {
         ious
     }
 
-    pub(crate) fn calc_iou_distance(
+    pub(crate) fn calc_distance(
         a_tracks: &Vec<STrack>,
         b_tracks: &Vec<STrack>,
+        use_ciou: bool,
     ) -> Vec<Vec<f32>> {
         let mut a_rects = Vec::new();
         let mut b_rects = Vec::new();
@@ -521,7 +577,12 @@ impl ByteTracker {
             b_rects.push(track.get_rect());
         }
 
-        let ious = Self::calc_ious(&a_rects, &b_rects);
+        let ious = if use_ciou { 
+            Self::calc_cious(&a_rects, &b_rects)
+        } else {
+            Self::calc_ious(&a_rects, &b_rects)
+        };
+        
         let mut cost_matrix = Vec::new();
         for ai in 0..a_tracks.len() {
             let mut iou = Vec::new();
