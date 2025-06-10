@@ -494,12 +494,13 @@ impl ByteTracker {
         Ok((matches, a_unmatched, b_unmatched))
     }
 
-    // Computes the CIoU between two lists of Rect<f32> objects
+    /// Computes the CIoU between two lists of Rect<f32> objects
     pub fn calc_cious(a_rects: &Vec<Rect<f32>>, b_rects: &Vec<Rect<f32>>) -> Vec<Vec<f32>> {
-        let mut cious = vec![vec![0.0; b_rects.len()]; a_rects.len()];
         if a_rects.is_empty() || b_rects.is_empty() {
-            return cious;
+            return Vec::new();
         }
+        let mut cious = vec![vec![0.0; b_rects.len()]; a_rects.len()];
+        const EPSILON: f32 = 1e-7;
 
         for (ai, a) in a_rects.iter().enumerate() {
             let ax1 = a.x();
@@ -520,7 +521,7 @@ impl ByteTracker {
                 let by2 = by1 + bh;
 
                 // Center distance squared
-                let center_dist_sq = (ax1 - bx1).powi(2) + (ay1 - by1).powi(2);
+                let center_dist_sq = ((ax1 + aw / 2.0) - (bx1 + bw / 2.0)).powi(2) + ((ay1 + ah / 2.0) - (by1 + bh / 2.0)).powi(2);
 
                 let enclose_x1 = ax1.min(bx1);
                 let enclose_y1 = ay1.min(by1);
@@ -530,12 +531,16 @@ impl ByteTracker {
                 let enclose_diag_sq =
                     (enclose_x2 - enclose_x1).powi(2) + (enclose_y2 - enclose_y1).powi(2);
 
-                // Aspect ratio penalty
-                let v = (4.0 / (PI * PI)) * (aw.atan2(ah) - bw.atan2(bh)).powi(2);
+                // Aspect ratio penalty - handle potential zero dimensions
+                let v = if ah <= EPSILON || bh <= EPSILON {
+                    0.0
+                } else {
+                    (4.0 / (PI * PI)) * (aw.atan2(ah) - bw.atan2(bh)).powi(2)
+                };
                 let alpha = if iou > 0.0 { v / (1.0 - iou + v) } else { 0.0 };
 
                 // Final CIoU score
-                let ciou = iou - center_dist_sq / (enclose_diag_sq + 1e-7) - alpha * v;
+                let ciou = iou - center_dist_sq / (enclose_diag_sq + EPSILON) - alpha * v;
                 cious[ai][bi] = (ciou.clamp(-1.0, 1.0) + 1.0) / 2.0;
             }
         }
