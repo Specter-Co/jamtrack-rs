@@ -299,7 +299,6 @@ class QuadAlertGeometry(BaseAlertGeometry):
         abs_dot_u = np.abs(np.dot(u_prime, i_edge))
         abs_dot_v = np.abs(np.dot(v_prime, i_edge))
         t_prime_points = (u0_prime, u1_prime) if abs_dot_u > abs_dot_v else (v0_prime, v1_prime)
-        t_prime = u_prime if abs_dot_u > abs_dot_v else v_prime
 
         # Determine whether t_prime must be rotated +90 or -90 to 
         # Find edge f (opposite of the user selected edge)
@@ -308,17 +307,21 @@ class QuadAlertGeometry(BaseAlertGeometry):
             (self.edge_idx[1] + 2) % 4,
         ]
         f_edge_points = [end_points[f_edge_idx[0]], end_points[f_edge_idx[1]]]
-        # Note: q_prime points in direction of permitted flow
-        q_prime = np.array(edge_points[1]) - np.array(f_edge_points[0])
-        x_sign = np.sign(np.cross(t_prime, q_prime))
+
+        # Vector q points in direction of permitted flow in Projected space
+        q = np.array(edge_points[1]) - np.array(f_edge_points[0])
 
         # Transform t from BEV space to Projected space
         t_points = [apply_transform(self.H, p) for p in t_prime_points]
 
-        # Compute perpendicular vectors w1 and w2
+        # Vector t is parallel to the user selected edge in Projected space
         t0, t1 = t_points
         t = np.array(t1) - np.array(t0)
-        # Vector that determines correct flow dir
+
+        # Determine if t should be rotated + or - 90 deg
+        x_sign = np.sign(np.cross(t, q))
+
+        # Vector w indicates correct flow dir
         w = rotate_2d(t, x_sign * np.pi / 2)
         w_dx, w_dy = (np.array(w) / np.linalg.norm(np.array(w))).tolist()
         
