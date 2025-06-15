@@ -18,8 +18,13 @@ use std::f32::consts::PI;
 pub struct ByteTracker {
     track_thresh: f32,
     high_thresh: f32,
-    match_thresh: f32,
-    low_conf_match_thresh: f32,
+    use_ciou: bool,
+    high_conf_match_iou_weight: f32,
+    high_conf_match_min_iou: f32,
+    low_conf_match_iou_weight: f32,
+    low_conf_match_min_iou: f32,
+    track_activation_iou_weight: f32,
+    track_activation_min_iou: f32,
     kalman_std_weight_pos: f32,
     kalman_std_weight_vel: f32,
     kalman_std_weight_position_meas: f32,
@@ -56,8 +61,13 @@ impl ByteTracker {
         track_buffer: usize,
         track_thresh: f32,
         high_thresh: f32,
-        match_thresh: f32,
-        low_conf_match_thresh: f32,
+        use_ciou: bool,
+        high_conf_match_iou_weight: f32,
+        high_conf_match_min_iou: f32,
+        low_conf_match_iou_weight: f32,
+        low_conf_match_min_iou: f32,
+        track_activation_iou_weight: f32,
+        track_activation_min_iou: f32,
         kalman_std_weight_pos: f32,
         kalman_std_weight_vel: f32,
         kalman_std_weight_position_meas: f32,
@@ -72,8 +82,13 @@ impl ByteTracker {
         Self {
             track_thresh,
             high_thresh,
-            match_thresh,
-            low_conf_match_thresh,
+            use_ciou,
+            high_conf_match_iou_weight,
+            high_conf_match_min_iou,
+            low_conf_match_iou_weight,
+            low_conf_match_min_iou,
+            track_activation_iou_weight,
+            track_activation_min_iou,
             kalman_std_weight_pos,
             kalman_std_weight_vel,
             kalman_std_weight_position_meas,
@@ -164,14 +179,13 @@ impl ByteTracker {
 
         {
             let iou_distance =
-                Self::calc_iou_distance(&strack_pool, &det_stracks);
-
+                Self::calc_distance(&strack_pool, &det_stracks, self.use_ciou, self.track_thresh, 1., self.high_conf_match_iou_weight);
             let (matches_idx, unmatched_track_idx, unmatched_detection_idx) =
                 self.linear_assignment(
                     &iou_distance,
                     strack_pool.len(),
                     det_stracks.len(),
-                    self.match_thresh,
+                    1.0 - (self.high_conf_match_min_iou * self.high_conf_match_iou_weight),
                 )?;
 
             for (idx, sol) in matches_idx {
@@ -209,17 +223,18 @@ impl ByteTracker {
         /* ------------------ Step 3: Second association using low score dets ------------------------- */
         let mut current_lost_stracks = Vec::new();
         {
-            let iou_distance = Self::calc_iou_distance(
+            let iou_distance = Self::calc_distance(
                 &remain_tracked_stracks,
                 &det_low_stracks,
+                self.use_ciou,
+                0.1, self.track_thresh, self.low_conf_match_iou_weight
             );
-
             let (matches_idx, unmatched_track_idx, _) = self
                 .linear_assignment(
                     &iou_distance,
                     remain_tracked_stracks.len(),
                     det_low_stracks.len(),
-                    self.low_conf_match_thresh,
+                    1.0 - (self.low_conf_match_min_iou * self.low_conf_match_iou_weight),
                 )?;
 
             for (idx, sol) in matches_idx {
@@ -253,9 +268,11 @@ impl ByteTracker {
         /* ------------------ Step 4: Init new stracks ------------------------- */
         let mut current_removed_stracks = Vec::new();
         {
-            let iou_distance = Self::calc_iou_distance(
+            let iou_distance = Self::calc_distance(
                 &non_active_stracks,
                 &remain_det_stracks,
+                self.use_ciou,
+                self.track_thresh, 1., self.track_activation_iou_weight
             );
 
             let (matches_idx, unmatch_unconfirmed_idx, unmatched_detection_idx) =
@@ -263,7 +280,7 @@ impl ByteTracker {
                     &iou_distance,
                     non_active_stracks.len(),
                     remain_det_stracks.len(),
-                    0.7,
+                    1.0 - (self.track_activation_min_iou * self.track_activation_iou_weight),
                 )?;
 
             for &(idx, sol) in matches_idx.iter() {
@@ -337,7 +354,14 @@ impl ByteTracker {
     pub fn get_lost_tracks(&self) -> PyResult<Vec<Object>> {
         Ok(self.lost_stracks
             .iter()
-            .filter(|t| t.is_activated())
+            .map(|t| t.into())
+            .collect())
+    }
+
+    pub fn get_inactive_tracks(&self) -> PyResult<Vec<Object>> {
+        Ok(self.tracked_stracks
+            .iter()
+            .filter(|t| !t.is_activated())
             .map(|t| t.into())
             .collect())
     }
@@ -398,7 +422,7 @@ impl ByteTracker {
         let mut a_res = Vec::new();
         let mut b_res = Vec::new();
 
-        let ious = Self::calc_iou_distance(a_stracks, b_stracks);
+        let ious = Self::calc_distance(a_stracks, b_stracks, false, 0., 1., 1.);
         let mut overlapping_combinations = Vec::new();
 
         for (i, row) in ious.iter().enumerate() {
@@ -510,65 +534,72 @@ impl ByteTracker {
         Ok((matches, a_unmatched, b_unmatched))
     }
 
-    // /// Computes the CIoU between two lists of Rect<f32> objects
-    // pub fn compute_ciou(a_rects: &Vec<Rect<f32>>, b_rects: &Vec<Rect<f32>>) -> Vec<Vec<f32>> {
-    //     let mut cious = vec![vec![0.0; b_rects.len()]; a_rects.len()];
-    //     if a_rects.is_empty() || b_rects.is_empty() {
-    //         return cious;
-    //     }
+    /// Computes the CIoU between two lists of Rect<f32> objects
+    pub fn calc_cious(a_rects: &Vec<Rect<f32>>, b_rects: &Vec<Rect<f32>>) -> Vec<Vec<f32>> {
+        if a_rects.is_empty() || b_rects.is_empty() {
+            return Vec::new();
+        }
+        let mut cious = vec![vec![0.0; b_rects.len()]; a_rects.len()];
+        const EPSILON: f32 = 1e-7;
 
-    //     for (ai, a) in a_rects.iter().enumerate() {
-    //         let a_xyah = a.get_xyah();
-    //         let ax = a_xyah[(0, 0)];
-    //         let ay = a_xyah[(0, 1)];
-    //         let ar = a_xyah[(0, 2)];
-    //         let ah = a_xyah[(0, 3)];
-    //         let aw = ar * ah;
+        for (ai, a) in a_rects.iter().enumerate() {
+            let ax1 = a.x();
+            let ay1 = a.y();
+            let aw = a.width();
+            let ah = a.height();
+            let ax2 = ax1 + aw;
+            let ay2 = ay1 + ah;
 
-    //         for (bi, b) in b_rects.iter().enumerate() {
-    //             let iou = a.calc_iou(b);
+            for (bi, b) in b_rects.iter().enumerate() {
+                let iou = b.calc_iou(a);
 
-    //             let b_xyah = b.get_xyah();
-    //             let bx = b_xyah[(0, 0)];
-    //             let by = b_xyah[(0, 1)];
-    //             let br = b_xyah[(0, 2)];
-    //             let bh = b_xyah[(0, 3)];
-    //             let bw = br * bh;
+                let bx1 = b.x();
+                let by1 = b.y();
+                let bw = b.width();
+                let bh = b.height();
+                let bx2 = bx1 + bw;
+                let by2 = by1 + bh;
 
-    //             // Center distance squared
-    //             let center_dist_sq = (ax - bx).powi(2) + (ay - by).powi(2);
+                // Center distance squared
+                let center_dist_sq = ((ax1 + aw / 2.0) - (bx1 + bw / 2.0)).powi(2) + ((ay1 + ah / 2.0) - (by1 + bh / 2.0)).powi(2);
 
-    //             // Enclosing box (in tlbr)
-    //             let a_x1 = a.x();
-    //             let a_y1 = a.y();
-    //             let a_x2 = a.x() + a.width();
-    //             let a_y2 = a.y() + a.height();
+                let enclose_x1 = ax1.min(bx1);
+                let enclose_y1 = ay1.min(by1);
+                let enclose_x2 = ax2.max(bx2);
+                let enclose_y2 = ay2.max(by2);
 
-    //             let b_x1 = b.x();
-    //             let b_y1 = b.y();
-    //             let b_x2 = b.x() + b.width();
-    //             let b_y2 = b.y() + b.height();
+                let enclose_diag_sq =
+                    (enclose_x2 - enclose_x1).powi(2) + (enclose_y2 - enclose_y1).powi(2);
 
-    //             let enclose_x1 = a_x1.min(b_x1);
-    //             let enclose_y1 = a_y1.min(b_y1);
-    //             let enclose_x2 = a_x2.max(b_x2);
-    //             let enclose_y2 = a_y2.max(b_y2);
+                // GIOU
+                let inter_x1 = ax1.max(bx1);
+                let inter_y1 = ay1.max(by1);
+                let inter_x2 = ax2.min(bx2);
+                let inter_y2 = ay2.min(by2);
+                let inter_w = (inter_x2 - inter_x1).max(0.0);
+                let inter_h = (inter_y2 - inter_y1).max(0.0);
+                let inter_area = inter_w * inter_h;
+                let union_area = aw * ah + bw * bh - inter_area + EPSILON;
+                let enclose_area = (enclose_x2 - enclose_x1) * (enclose_y2 - enclose_y1);
+                let giou = (enclose_area - union_area) / enclose_area;
 
-    //             let enclose_diag_sq =
-    //                 (enclose_x2 - enclose_x1).powi(2) + (enclose_y2 - enclose_y1).powi(2);
+                // Aspect ratio penalty - handle potential zero dimensions
+                let v = if ah <= EPSILON || bh <= EPSILON {
+                    0.0
+                } else {
+                    (4.0 / (PI * PI)) * (aw.atan2(ah) - bw.atan2(bh)).powi(2)
+                };
+                let alpha = if iou > 0.0 { v / (1.0 - iou + v) } else { 0.0 };
 
-    //             // Aspect ratio penalty
-    //             let v = (4.0 / (PI * PI)) * (aw.atan2(ah) - bw.atan2(bh)).powi(2);
-    //             let alpha = if iou > 0.0 { v / (1.0 - iou + v) } else { 0.0 };
+                // Final CIoU score
+                let ciou = iou - center_dist_sq / (enclose_diag_sq + EPSILON) - alpha * v;
+                // let ciou = iou - giou;
+                cious[ai][bi] = (ciou.clamp(-1.0, 1.0) + 1.0) / 2.0;
+            }
+        }
 
-    //             // Final CIoU score
-    //             let ciou = iou - center_dist_sq / (enclose_diag_sq + 1e-7) - alpha * v;
-    //             cious[ai][bi] = ciou;
-    //         }
-    //     }
-
-    //     cious
-    // }
+        cious
+    }
 
     pub fn calc_ious(
         a_rects: &Vec<Rect<f32>>,
@@ -588,9 +619,13 @@ impl ByteTracker {
         ious
     }
 
-    pub(crate) fn calc_iou_distance(
+    pub(crate) fn calc_distance(
         a_tracks: &Vec<STrack>,
         b_tracks: &Vec<STrack>,
+        use_ciou: bool,
+        score_min: f32,
+        score_max: f32,
+        iou_weight: f32,
     ) -> Vec<Vec<f32>> {
         let mut a_rects = Vec::new();
         let mut b_rects = Vec::new();
@@ -603,12 +638,20 @@ impl ByteTracker {
             b_rects.push(track.get_rect());
         }
 
-        let ious = Self::calc_ious(&a_rects, &b_rects);
+        let ious = if use_ciou { 
+            Self::calc_cious(&a_rects, &b_rects)
+        } else {
+            Self::calc_ious(&a_rects, &b_rects)
+        };
+        
         let mut cost_matrix = Vec::new();
         for ai in 0..a_tracks.len() {
             let mut iou = Vec::new();
             for bi in 0..b_tracks.len() {
-                iou.push(1.0 - ious[ai][bi]);
+                let conf_score = (b_tracks[bi].get_score() - score_min) / (score_max - score_min);
+                let score = ious[ai][bi] * iou_weight + conf_score * (1.0 - iou_weight);
+                iou.push(1.0 - score);
+                // iou.push(1.0 - ious[ai][bi]);
             }
             cost_matrix.push(iou);
         }

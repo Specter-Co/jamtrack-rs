@@ -163,6 +163,14 @@ impl STrack {
         return self.mean[5];
     }
 
+    pub(crate) fn set_score(&mut self, score: f32) {
+        self.score = score;
+    }
+
+    pub(crate) fn set_id(&mut self, id: usize) {
+        self.track_id = id;
+    }
+
     pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize) {
         self.kalman_filter.initiate(
             &mut self.mean,
