@@ -72,4 +72,42 @@ class ByteTrackerPy:
             objects.append(obj)
         tracks = self.tracker.update(objects)
         return tracks
+    
+class PyTrack:
+    def __init__(self, track: Object, w=None):
+        self.track = track
+        if w is not None:
+            self.w = w
+        else:
+            self.w = None
+    @property
+    def detection_id(self):
+        return self.track.detection_id
+    @property
+    def track_id(self):
+        return self.track.track_id
+    @property
+    def prob(self):
+        return self.track.prob
+    @property
+    def rect(self):
+        return self.track.rect
+    @property
+    def track_vel_xy(self):
+        return self.track.track_vel_xy
+    @property
+    def x(self):
+        return self.track.x
+    @property
+    def y(self):
+        return self.track.y
+    @property
+    def width(self):
+        return self.track.width
+    @property
+    def height(self):
+        return self.track.height
+    
+    
+    
  

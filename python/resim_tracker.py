@@ -1,4 +1,4 @@
-from byte_tracker_py import ByteTrackerPy, Object
+from byte_tracker_py import ByteTrackerPy, Object, PyTrack
 import cv2
 import os
 import json
@@ -12,8 +12,9 @@ import math
 import subprocess
 import argparse
 from alert_geometry import QuadAlertGeometry
+from utils import get_video_timestamps, align_timestamps_to_frames, convert_qid_dets_to_df
 """
-python python/resim_tracker.py --det_path ./data/specter-data-6-2/test-2/1748907694102.json --video_path ./data/specter-data-6-2/test-2/1748907554795_1748907565999.h265 --out_video ./tracker_result_videos/test-2_tracks.mp4 --start_frame 1000 --end_frame 1100 --sensor_id 120
+python python/resim_tracker.py --det_path data/collect-10/1750491697814.json --timestamps_path data/collect-10/0x3f2.txt --video_path data/collect-10/0x3f2.h265 --out_video ./tracker_result_videos/collect-10.mp4 --sensor_id 0x3f2
 """
 def parse_sensor_detections(detection_path, video_path, sensor_id=120, expected_frames=None):
     # Try to find stdout path
@@ -211,10 +212,14 @@ def extract_track_info(track, track_class):
     x1,y1 = track.x, track.y
     x2,y2 = x1 + track.width, y1 + track.height
     vx,vy = track.track_vel_xy
-    return [
+    data = [
         x1,y1,x2,y2,vx,vy,
         track_class, track.track_id, track.detection_id, track.prob
     ]
+    if track.w is not None:
+        data.append(track.w[0])
+        data.append(track.w[1])
+    return data
 
 def draw_debug_detection(frame, frame_no, track_id, tracks, dets, ious, iou_tracks):
     debug_track = None
@@ -371,17 +376,9 @@ def get_dets_from_torch(det_path):
     print(f"Found {len(all_dets)} frames of detections, assuming this length for video")
     return all_dets
 
-def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, sensor_id=120, use_regen_pcp=False):
+def main(video_path, det_path, timestamps_path, out_video_name, start_frame=0, end_frame=np.inf, sensor_id=120, use_regen_pcp=False):
     assert os.path.exists(video_path)
     assert os.path.exists(det_path)
-
-    if not use_regen_pcp:
-        det_by_frame, det_frame_timestamps, vid_timestamps, missed_frames = parse_sensor_detections(det_path, video_path, sensor_id=sensor_id)
-        vid_frames_to_det_frames = align_detection_to_video(det_frame_timestamps, vid_timestamps, thresh=.01)
-        all_dets = get_dets_from_json(vid_frames_to_det_frames, det_by_frame)
-    else:
-        all_dets = get_dets_from_torch(det_path)
-        vid_timestamps = np.ones(len(all_dets))
 
     bytetrack_human = ByteTrackerPy(
         # frame_rate=10,
@@ -467,11 +464,35 @@ def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, 
     vid_fps = int(cap.get(cv2.CAP_PROP_FPS))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    # width = 1920
-    # height = 1920
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(out_video_name, fourcc, vid_fps, (int(width*1.5),int(height*1.5)))
+    out = cv2.VideoWriter(out_video_name, fourcc, vid_fps, (int(height*1.5),int(width*1.5)))
     bag_only_out = cv2.VideoWriter(out_video_name.replace('.mp4', '_bag_only.mp4'), fourcc, vid_fps, (int(width*1.5),int(height*1.5)))
+
+    if not use_regen_pcp:
+        # det_by_frame, det_frame_timestamps, vid_timestamps, missed_frames = parse_sensor_detections(det_path, video_path, sensor_id=sensor_id)
+        # vid_frames_to_det_frames = align_detection_to_video(det_frame_timestamps, vid_timestamps, thresh=.01)
+        # all_dets = get_dets_from_json(vid_frames_to_det_frames, det_by_frame)
+        
+        vid_timestamps = get_video_timestamps(timestamps_path)
+        det_df = convert_qid_dets_to_df(det_path, sensor_id, timestamps_path)
+        det_df['x1'] = det_df['x1_r'] * width
+        det_df['y1'] = det_df['y1_r'] * height
+        det_df['x2'] = det_df['x2_r'] * width
+        det_df['y2'] = det_df['y2_r'] * height
+        det_df['w'] = det_df['x2'] - det_df['x1']
+        det_df['h'] = det_df['y2'] - det_df['y1']
+        det_df = det_df.reset_index(drop=True)
+        all_dets = []
+        det_no = 0
+        for frame_no in range(len(vid_timestamps)):
+            frame_dets = det_df[det_df["frame"] == frame_no]
+            frame_det_vals = frame_dets[["frame", "x1", "y1", "w", "h", "confidence", "cls"]].values
+            frame_det_vals = np.insert(frame_det_vals, 1, np.arange(det_no, det_no + len(frame_det_vals)), axis=1)
+            det_no += len(frame_det_vals)
+            all_dets.append(frame_det_vals)
+    else:
+        all_dets = get_dets_from_torch(det_path)
+        vid_timestamps = np.ones(len(all_dets))
 
     class_name_to_num = {
         "Person": 0,
@@ -581,8 +602,12 @@ def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, 
             bag_dets = []
 
         # Tracker update
-        person_tracks = bytetrack_human.update(human_dets)
-        bag_tracks = bytetrack_bag.update(bag_dets)
+        bytetrack_person_tracks = bytetrack_human.update(human_dets)
+        bytetrack_bag_tracks = bytetrack_bag.update(bag_dets)
+
+        # Convert to PyTrack
+        person_tracks = [PyTrack(track) for track in bytetrack_person_tracks]
+        bag_tracks = [PyTrack(track) for track in bytetrack_bag_tracks]
 
         # Track status update
         # TODO are track ids unique across classes?
@@ -595,8 +620,9 @@ def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, 
             previous_track_status_up = bag_track_statuses_up.get(track.track_id, 0)
             # Bottom center of the track
             pos = track.x + track.width / 2, track.y + track.height
-            alert_status_down, inner_prod_down, in_quad = quad_alert_geometry_down.get_track_status(pos, track.track_vel_xy, previous_track_status_down, frame, debug_plotting=True)
-            alert_status_up, inner_prod_up, in_quad = quad_alert_geometry_up.get_track_status(pos, track.track_vel_xy, previous_track_status_up, frame, debug_plotting=False)
+            alert_status_down, inner_prod_down, in_quad, (w_dx, w_dy) = quad_alert_geometry_down.get_track_status(pos, track.track_vel_xy, previous_track_status_down, frame, debug_plotting=True)
+            alert_status_up, inner_prod_up, in_quad, _ = quad_alert_geometry_up.get_track_status(pos, track.track_vel_xy, previous_track_status_up, frame, debug_plotting=False)
+            track.w = (w_dx, w_dy)
 
             bag_track_statuses_down[track.track_id] = alert_status_down
             bag_track_statuses_up[track.track_id] = alert_status_up
@@ -607,8 +633,9 @@ def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, 
             previous_track_status_up = human_track_statuses_up.get(track.track_id, 0)
             # Bottom center of the track
             pos = track.x + track.width / 2, track.y + track.height
-            alert_status_down, inner_prod_down, in_quad = quad_alert_geometry_down.get_track_status(pos, track.track_vel_xy, previous_track_status_down, frame, debug_plotting=True)
-            alert_status_up, inner_prod_up, in_quad = quad_alert_geometry_up.get_track_status(pos, track.track_vel_xy, previous_track_status_up, frame, debug_plotting=False)
+            alert_status_down, inner_prod_down, in_quad, (w_dx, w_dy) = quad_alert_geometry_down.get_track_status(pos, track.track_vel_xy, previous_track_status_down, frame, debug_plotting=True)
+            alert_status_up, inner_prod_up, in_quad, _ = quad_alert_geometry_up.get_track_status(pos, track.track_vel_xy, previous_track_status_up, frame, debug_plotting=False)
+            track.w = (w_dx, w_dy)
 
             human_track_statuses_down[track.track_id] = alert_status_down
             human_track_statuses_up[track.track_id] = alert_status_up
@@ -630,10 +657,15 @@ def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, 
         result_tracks.append(extracted_person_tracks + extracted_bag_tracks)
 
         # Draw lost tracks for debugging
-        lost_bags = bytetrack_bag.tracker.get_lost_tracks()
-        lost_humans = bytetrack_human.tracker.get_lost_tracks()
-        cand_bags = bytetrack_bag.tracker.get_inactive_tracks()
-        cand_humans = bytetrack_human.tracker.get_inactive_tracks()
+        bytetrack_lost_bags = bytetrack_bag.tracker.get_lost_tracks()
+        bytetrack_lost_humans = bytetrack_human.tracker.get_lost_tracks()
+        bytetrack_cand_bags = bytetrack_bag.tracker.get_inactive_tracks()
+        bytetrack_cand_humans = bytetrack_human.tracker.get_inactive_tracks()
+
+        lost_bags = [PyTrack(track) for track in bytetrack_lost_bags]
+        lost_humans = [PyTrack(track) for track in bytetrack_lost_humans]
+        cand_bags = [PyTrack(track) for track in bytetrack_cand_bags]
+        cand_humans = [PyTrack(track) for track in bytetrack_cand_humans]
 
         lost_bag_ious = calc_ious(lost_bags, bag_dets, calc_ciou=True)
         lost_human_ious = calc_ious(lost_humans, human_dets, calc_ciou=False)
@@ -681,9 +713,11 @@ def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, 
 
         # Skip frames for viz (still run all the other tracker stuff)
         if frame_no < start_frame:
+            print(f"Skipping frame {frame_no} < {start_frame}")
             frame_no += 1
             continue
         if frame_no >= end_frame:
+            print(f"Reached end frame {end_frame}")
             frame_no += 1
             break
         
@@ -707,11 +741,12 @@ def main(video_path, det_path, out_video_name, start_frame=0, end_frame=np.inf, 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run resim tracker on video')
     parser.add_argument('--det_path', required=True, help='Path to detections file')
+    parser.add_argument('--timestamps_path', required=True, help='Path to timestamps file')
     parser.add_argument('--video_path', required=True, help='Path to video file')
     parser.add_argument('--out_video', required=True, help='Output video path')
     parser.add_argument('--start_frame', type=int, default=0, help='Start frame number')
     parser.add_argument('--end_frame', type=str, default="np.inf", help='End frame number')
-    parser.add_argument('--sensor_id', type=int, required=True, help='Sensor ID')
+    parser.add_argument('--sensor_id', type=str, required=True, help='Sensor ID')
     args = parser.parse_args()
 
     end_frame = eval(args.end_frame)
@@ -722,6 +757,7 @@ if __name__ == "__main__":
     result_tracks, statuses_down, statuses_up, lost_tracks, frame_no = main(
         args.video_path, 
         args.det_path, 
+        args.timestamps_path,
         args.out_video, 
         start_frame=args.start_frame, 
         end_frame=end_frame, 

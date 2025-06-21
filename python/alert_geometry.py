@@ -353,20 +353,20 @@ class QuadAlertGeometry(BaseAlertGeometry):
 
         # Persist alert
         if track_status == 1 and in_quad:
-            return 1, inner_prod, in_quad
+            return 1, inner_prod, in_quad, (w_dx, w_dy)
         if not is_against_flow:
-            return 0, inner_prod, in_quad
+            return 0, inner_prod, in_quad, (w_dx, w_dy)
         # Alert
         if in_quad and is_against_flow:
-            return 1, inner_prod, in_quad
+            return 1, inner_prod, in_quad, (w_dx, w_dy)
         # Warning
         if track_status == 0 and not in_quad:
             for i in range(4):
                 pt1, pt2 = self.alert_region[i], self.alert_region[(i + 1) % 4]
                 dist = point_to_segment_distance(track_pos[0], track_pos[1], pt1[0], pt1[1], pt2[0], pt2[1])
                 if dist < self.radius:
-                    return -1, inner_prod, in_quad
-        return 0, inner_prod, in_quad
+                    return -1, inner_prod, in_quad, (w_dx, w_dy)
+        return 0, inner_prod, in_quad, (w_dx, w_dy)
 
         
 
