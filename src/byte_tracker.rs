@@ -124,6 +124,15 @@ impl ByteTracker {
             }
         }
 
+        // Debug logging for detection classification
+        println!("Frame {}: Total detections: {}, High-conf: {}, Low-conf: {}", 
+            self.frame_id, det_stracks.len() + det_low_stracks.len(), 
+            det_stracks.len(), det_low_stracks.len());
+
+        for (i, track) in det_stracks.iter().enumerate() {
+            println!("  High-conf det {}: score={:.3}, rect={:?}", i, track.get_score(), track.get_rect());
+        }
+
         // Create lists of existing stracks
         let mut active_stracks = Vec::new();
         let mut non_active_stracks = Vec::new();
@@ -275,11 +284,18 @@ impl ByteTracker {
             // add new stracks
             for &unmatch_idx in unmatched_detection_idx.iter() {
                 let mut track = remain_det_stracks[unmatch_idx].clone();
+                println!("Frame {}: Considering new track creation - score: {:.3}, high_thresh: {:.3}", 
+                    self.frame_id, track.get_score(), self.high_thresh);
+                
                 if track.get_score() < self.high_thresh {
+                    println!("  -> REJECTED: Score {:.3} < threshold {:.3}", track.get_score(), self.high_thresh);
                     continue;
                 }
+                
                 self.track_id_count += 1;
                 track.activate(self.frame_id, self.track_id_count);
+                println!("  -> NEW TRACK CREATED: track_id={}, score={:.3}, rect={:?}", 
+                    self.track_id_count, track.get_score(), track.get_rect());
                 current_tracked_stracks.push(track.clone());
             }
         }
@@ -318,11 +334,21 @@ impl ByteTracker {
         self.tracked_stracks = tracked_stracks_out;
         self.lost_stracks = lost_stracks_out;
 
-        let mut output_stracks = Vec::new();
+        let mut output_stracks: Vec<Object> = Vec::new();
         for track in self.tracked_stracks.iter() {
             if track.is_activated() {
                 output_stracks.push(track.into());
             }
+        }
+
+        // Debug logging for final state
+        println!("Frame {}: Final state - tracked: {}, lost: {}, removed: {}, output: {}", 
+            self.frame_id, self.tracked_stracks.len(), self.lost_stracks.len(), 
+            0, output_stracks.len());
+
+        for track in output_stracks.iter() {
+            println!("  Output track_id={:?}: rect={:?}", 
+                track.get_track_id(), track.get_rect());
         }
 
         Ok(output_stracks)
