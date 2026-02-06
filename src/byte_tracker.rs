@@ -158,14 +158,14 @@ impl ByteTracker {
         }
 
         // Predict the current location with KF
+        for track in active_stracks.iter_mut() {
+            track.predict();
+        }
         let mut original_lost_stracks = Vec::new();
         for track in self.lost_stracks.iter() {
             let mut cloned = track.clone();
             cloned.predict();
             original_lost_stracks.push(cloned);
-        }
-        for track in active_stracks.iter_mut() {
-            track.predict();
         }
         // Step 3: Combine predicted active and lost tracks
         let mut strack_pool = Self::joint_stracks(&active_stracks, &original_lost_stracks);
