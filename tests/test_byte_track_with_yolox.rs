@@ -1,12 +1,46 @@
 use std::collections::HashMap;
 
 use jamtrack_rs::byte_tracker::ByteTracker;
+use jamtrack_rs::object::Object;
+use jamtrack_rs::rect::Rect;
 use nearly_eq::assert_nearly_eq;
 use serde::Deserialize;
 use serde_json;
 
 const TRACKING_JSON_PATH: &str = "data/jsons/tracking_results.json";
 const DETECTION_JSON_PATH: &str = "data/jsons/detection_results.json";
+
+/* ----------------------------------------------------------------------------
+ * Default ByteTracker helper
+ * ---------------------------------------------------------------------------- */
+
+/// Creates a ByteTracker with default parameters.
+/// Note: num ticks to persist a lost track = track_buffer * frame_rate / 30
+fn default_byte_tracker() -> ByteTracker {
+    ByteTracker::new(
+        30,        // frame_rate
+        30,        // track_buffer: used to calculate lost track persistence
+        0.5,       // track_thresh: boundary for low vs high conf detection
+        0.7,       // high_thresh: min det conf to spawn a new candidate track
+        false,     // use_ciou: use CIoU instead of IoU for matching
+        0.3,       // high_conf_match_min_iou: min IoU for high conf matching
+        1.0,       // high_conf_match_iou_weight
+        0.5,       // low_conf_match_min_iou: min IoU for low conf matching
+        1.0,       // low_conf_match_iou_weight
+        0.3,       // track_activation_min_iou: min IoU for track activation
+        1.0,       // track_activation_iou_weight
+        1. / 20.,  // kalman_std_weight_pos: position uncertainty weight
+        1. / 160., // kalman_std_weight_vel: velocity uncertainty weight
+        1. / 20.,  // kalman_std_weight_position_meas: position measurement noise
+        1. / 20.,  // kalman_std_weight_position_mot: position motion noise
+        1. / 160., // kalman_std_weight_velocity_mot: velocity motion noise
+        1e-2,      // kalman_std_aspect_ratio_init: initial aspect ratio uncertainty
+        1e-5,      // kalman_std_d_aspect_ratio_init: initial aspect ratio rate uncertainty
+        1e-2,      // kalman_std_aspect_ratio_mot: aspect ratio motion noise
+        1e-5,      // kalman_std_d_aspect_ratio_mot: aspect ratio rate motion noise
+        1e-1,      // kalman_std_aspect_ratio_meas: aspect ratio measurement noise
+    )
+}
 
 /* ----------------------------------------------------------------------------
  * Json schema for tracking results
@@ -231,26 +265,7 @@ fn test_byte_track_with_yolox() {
     let tracking_results = tracking.results;
     let fps = detection.fps;
     let track_buffer = detection.track_buffer;
-    let mut byte_tracker = ByteTracker::new(
-        fps,
-        track_buffer,
-        0.5, /* track thresh */
-        0.6, /* high_thresh */
-        false, /* use_ciou */
-        0.5,  /* high_conf_match_min_iou */
-        0.7, /* low_conf_match_min_iou */
-        0.7, /* track_activation_min_iou */
-        1. / 20., /* kalman_std_weight_pos */
-        1. / 160., /* kalman_std_weight_vel */
-        1. / 20., /* kalman_std_weight_position_meas */
-        1. / 20., /* kalman_std_weight_position_mot */
-        1. / 160., /* kalman_std_weight_velocity_mot */
-        1e-2, /* kalman_std_aspect_ratio_init */
-        1e-5, /* kalman_std_d_aspect_ratio_init */
-        1e-2, /* kalman_std_aspect_ratio_mot */
-        1e-5, /* kalman_std_d_aspect_ratio_mot */
-        1e-1, /* kalman_std_aspect_ratio_meas */
-    );
+    let mut byte_tracker = default_byte_tracker();
 
     for frame_id in 0..detection_results.len() {
         let objects = detection_results
@@ -258,8 +273,8 @@ fn test_byte_track_with_yolox() {
             .unwrap()
             .iter()
             .map(|v| <DetectionReuslt>::into(v.clone()))
-            .collect();
-        let outputs = byte_tracker.update(&objects).unwrap();
+            .collect::<Vec<_>>();
+        let outputs = byte_tracker.update(objects.into_iter()).unwrap();
 
         let expected_outputs = tracking_results.get(&frame_id).unwrap();
 
