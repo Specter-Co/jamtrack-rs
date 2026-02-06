@@ -114,7 +114,6 @@ impl KalmanFilter {
         covariance: &mut StateCov,
     ) {
         let mut std = SMatrix::<f32, 1, 8>::zeros();
-
         std[0] = self.std_weight_position_mot * mean[(0, 3)];
         std[1] = self.std_weight_position_mot * mean[(0, 3)];
         std[2] = self.std_aspect_ratio_mot;

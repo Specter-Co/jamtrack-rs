@@ -7,7 +7,7 @@ use nearly_eq::assert_nearly_eq;
 
 #[test]
 fn test_initiate() {
-    let kalman_filter = KalmanFilter::new(1. / 20., 1. / 160.);
+    let kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160., 1.0 / 20., 1.0 / 20., 1.0 / 160., 1e-2, 1e-5, 1e-2, 1e-5, 1e-1);
     let mut mean = SMatrix::<f32, 1, 8>::zeros();
     let mut covariance = SMatrix::<f32, 8, 8>::zeros();
     let measurement =
@@ -38,7 +38,7 @@ fn test_initiate() {
 
 #[test]
 fn test_predict() {
-    let mut kalman_filter = KalmanFilter::new(1. / 20., 1. / 160.);
+    let mut kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160., 1.0 / 20., 1.0 / 20., 1.0 / 160., 1e-2, 1e-5, 1e-2, 1e-5, 1e-1);
     let mut mean = SMatrix::<f32, 1, 8>::from_iterator([
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
     ]);
@@ -81,7 +81,7 @@ fn test_predict() {
 
 #[test]
 fn test_project() {
-    let kalman_filter = KalmanFilter::new(1. / 20., 1. / 160.);
+    let kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160., 1.0 / 20., 1.0 / 20., 1.0 / 160., 1e-2, 1e-5, 1e-2, 1e-5, 1e-1);
     let mean = SMatrix::<f32, 1, 8>::from_iterator([
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
     ]);
@@ -123,7 +123,7 @@ fn test_project() {
 
 #[test]
 fn test_update() {
-    let mut kalman_filter = KalmanFilter::new(1. / 20., 1. / 160.);
+    let mut kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160., 1.0 / 20., 1.0 / 20., 1.0 / 160., 1e-2, 1e-5, 1e-2, 1e-5, 1e-1);
     let mut mean = SMatrix::<f32, 1, 8>::from_iterator([
         1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
     ]);
@@ -166,7 +166,7 @@ fn test_update() {
 
 #[test]
 fn test_complex_predict() {
-    let mut kalman_filter = KalmanFilter::new(1. / 20., 1. / 160.);
+    let mut kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160., 1.0 / 20., 1.0 / 20., 1.0 / 160., 1e-2, 1e-5, 1e-2, 1e-5, 1e-1);
     let expected_mean = SMatrix::<f32, 1, 8>::from_iterator([
         1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0,
     ]);
