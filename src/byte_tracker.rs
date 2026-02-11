@@ -384,6 +384,7 @@ impl ByteTracker {
         Ok(output_stracks)
     }
 
+    // Debug functions
     pub fn get_lost_tracks(&self) -> PyResult<Vec<Object>> {
         Ok(self.lost_stracks
             .iter()
@@ -395,6 +396,14 @@ impl ByteTracker {
         Ok(self.tracked_stracks
             .iter()
             .filter(|t| !t.is_activated())
+            .map(|t| t.into())
+            .collect())
+    }
+
+    pub fn get_tracked_tracks(&self) -> PyResult<Vec<Object>> {
+        Ok(self.tracked_stracks
+            .iter()
+            .filter(|t| t.is_activated())
             .map(|t| t.into())
             .collect())
     }
