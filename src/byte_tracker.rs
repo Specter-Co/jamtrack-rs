@@ -117,14 +117,6 @@ impl ByteTracker {
         }
     }
 
-    pub fn track_buffer_sizes(&self) -> TrackBufferSizes {
-        TrackBufferSizes {
-            lost: self.lost_stracks.len(),
-            removed: self.removed_stracks.len(),
-            tracked: self.tracked_stracks.len(),
-        }
-    }
-
     pub fn update(
         &mut self,
         objects: Vec<PyRef<Object>>,
@@ -410,6 +402,14 @@ impl ByteTracker {
 }
 
 impl ByteTracker {
+    pub fn track_buffer_sizes(&self) -> TrackBufferSizes {
+        TrackBufferSizes {
+            lost: self.lost_stracks.len(),
+            removed: self.removed_stracks.len(),
+            tracked: self.tracked_stracks.len(),
+        }
+    }
+
     pub(crate) fn joint_stracks(
         a_tracks: &Vec<STrack>,
         b_tracks: &Vec<STrack>,
