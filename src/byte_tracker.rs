@@ -1,8 +1,10 @@
+use pyo3::prelude::*;
 use crate::{
     error::ByteTrackError,
     lapjv::lapjv,
     object::Object,
     rect::Rect,
+    rect::PyRect,
     strack::{STrack, STrackState},
 };
 use std::{collections::HashMap, vec};
@@ -10,7 +12,7 @@ use std::f32::consts::PI;
 /* ----------------------------------------------------------------------------
  * ByteTracker
  * ---------------------------------------------------------------------------- */
-
+#[pyclass]
 #[derive(Debug)]
 pub struct ByteTracker {
     track_thresh: f32,
@@ -42,6 +44,14 @@ pub struct ByteTracker {
     removed_stracks: Vec<STrack>,
 }
 
+#[pymodule]
+fn byte_tracker(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
+    m.add_class::<ByteTracker>()?;
+    m.add_class::<Object>()?;
+    m.add_class::<PyRect>()?;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrackBufferSizes {
     pub lost: usize,
@@ -49,7 +59,9 @@ pub struct TrackBufferSizes {
     pub tracked: usize,
 }
 
+#[pymethods]
 impl ByteTracker {
+    #[new]
     pub fn new(
         frame_rate: usize,
         track_buffer: usize,
@@ -115,8 +127,8 @@ impl ByteTracker {
 
     pub fn update(
         &mut self,
-        objects: impl Iterator<Item = Object>,
-    ) -> Result<Vec<Object>, ByteTrackError> {
+        objects: Vec<PyRef<Object>>,
+    ) -> PyResult<Vec<Object>> {
         self.frame_id += 1;
 
         /* ------------------ Step 1: Get detections ------------------------- */
@@ -128,7 +140,7 @@ impl ByteTracker {
         for obj in objects {
             let strack = STrack::new(
                 obj.get_detection_id(),
-                obj.get_rect(),
+                obj.get_rect().into(),
                 obj.get_prob(),
                 self.kalman_std_weight_pos,
                 self.kalman_std_weight_vel,
@@ -237,7 +249,6 @@ impl ByteTracker {
                 self.use_ciou,
                 0.1, self.track_thresh, self.low_conf_match_iou_weight
             );
-
             let (matches_idx, unmatched_track_idx, _) = self
                 .linear_assignment(
                     &iou_distance,
@@ -373,6 +384,23 @@ impl ByteTracker {
         Ok(output_stracks)
     }
 
+    pub fn get_lost_tracks(&self) -> PyResult<Vec<Object>> {
+        Ok(self.lost_stracks
+            .iter()
+            .map(|t| t.into())
+            .collect())
+    }
+
+    pub fn get_inactive_tracks(&self) -> PyResult<Vec<Object>> {
+        Ok(self.tracked_stracks
+            .iter()
+            .filter(|t| !t.is_activated())
+            .map(|t| t.into())
+            .collect())
+    }
+}
+
+impl ByteTracker {
     pub(crate) fn joint_stracks(
         a_tracks: &Vec<STrack>,
         b_tracks: &Vec<STrack>,

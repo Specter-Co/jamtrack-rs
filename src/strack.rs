@@ -49,7 +49,7 @@ impl STrack {
     pub(crate) fn new(
         detection_id: i64, 
         rect: Rect<f32>, 
-        score: f32,
+        score: f32, 
         std_weight_pos: f32, 
         std_weight_vel: f32,
         std_weight_position_meas: f32,
@@ -110,6 +110,7 @@ impl STrack {
             detection_id_last: 0,
             start_frame_id: 0,
             tracklet_len: 0,
+            detection_id_last: 0,
         }
     }
 
@@ -161,6 +162,14 @@ impl STrack {
     #[inline(always)]
     pub(crate) fn get_vel_y(&self) -> f32 {
         return self.mean[5];
+    }
+
+    pub(crate) fn set_score(&mut self, score: f32) {
+        self.score = score;
+    }
+
+    pub(crate) fn set_id(&mut self, id: usize) {
+        self.track_id = id;
     }
 
     pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize) {
