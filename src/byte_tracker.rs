@@ -52,6 +52,13 @@ fn byte_tracker(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrackBufferSizes {
+    pub lost: usize,
+    pub removed: usize,
+    pub tracked: usize,
+}
+
 #[pymethods]
 impl ByteTracker {
     #[new]
@@ -110,6 +117,14 @@ impl ByteTracker {
         }
     }
 
+    pub fn track_buffer_sizes(&self) -> TrackBufferSizes {
+        TrackBufferSizes {
+            lost: self.lost_stracks.len(),
+            removed: self.removed_stracks.len(),
+            tracked: self.tracked_stracks.len(),
+        }
+    }
+
     pub fn update(
         &mut self,
         objects: Vec<PyRef<Object>>,
@@ -145,7 +160,7 @@ impl ByteTracker {
             }
         }
 
-        // Create lists of existing stracks
+        // Create lists of existing stracks, separate into activated and non-activated
         let mut active_stracks = Vec::new();
         let mut non_active_stracks = Vec::new();
 
@@ -161,6 +176,7 @@ impl ByteTracker {
         for track in active_stracks.iter_mut() {
             track.predict();
         }
+        // KF predict step for lost tracks
         let mut original_lost_stracks = Vec::new();
         for track in self.lost_stracks.iter() {
             let mut cloned = track.clone();
@@ -177,6 +193,7 @@ impl ByteTracker {
         let mut refined_stracks = Vec::new();
 
         {
+            // Match high conf dets to active tracks or lost tracks
             let iou_distance =
                 Self::calc_distance(&strack_pool, &det_stracks, self.use_ciou, self.track_thresh, 1., self.high_conf_match_iou_weight);
             let (matches_idx, unmatched_track_idx, unmatched_detection_idx) =
@@ -187,6 +204,7 @@ impl ByteTracker {
                     1.0 - (self.high_conf_match_min_iou * self.high_conf_match_iou_weight),
                 )?;
 
+            // For matched tracks, update the state or re-activate the track
             for (idx, sol) in matches_idx {
                 debug_assert!(sol >= 0, "sol is negative {}", sol);
                 let mut track = strack_pool[idx].clone();
@@ -209,6 +227,8 @@ impl ByteTracker {
                 remain_det_stracks.push(det_stracks[unmatched_idx].clone());
             }
 
+            // For unmatched tracks that are active, add them for association in the next stage
+            // lost tracks are not added
             for &unmatched_idx in unmatched_track_idx.iter() {
                 if strack_pool[unmatched_idx].get_strack_state()
                     == STrackState::Tracked
@@ -222,6 +242,7 @@ impl ByteTracker {
         /* ------------------ Step 3: Second association using low score dets ------------------------- */
         let mut current_lost_stracks = Vec::new();
         {
+            // Match low conf dets to active tracks (no lost tracks or non-activated tracks)
             let iou_distance = Self::calc_distance(
                 &remain_tracked_stracks,
                 &det_low_stracks,
@@ -236,6 +257,7 @@ impl ByteTracker {
                     1.0 - (self.low_conf_match_min_iou * self.low_conf_match_iou_weight),
                 )?;
 
+            // For matched tracks, update the state or re-activate the track
             for (idx, sol) in matches_idx {
                 debug_assert!(sol >= 0, "sol is negative {}", sol);
 
@@ -255,6 +277,7 @@ impl ByteTracker {
                 }
             }
 
+            // Unmatched tracks past stage 2 become lost tracks
             for &unmatch_idx in unmatched_track_idx.iter() {
                 let mut track = remain_tracked_stracks[unmatch_idx].clone();
                 if track.get_strack_state() != STrackState::Lost {
@@ -274,6 +297,7 @@ impl ByteTracker {
                 self.track_thresh, 1., self.track_activation_iou_weight
             );
 
+            // Match unmatched high conf dets from stage 1 to non-activated tracks
             let (matches_idx, unmatch_unconfirmed_idx, unmatched_detection_idx) =
                 self.linear_assignment(
                     &iou_distance,
@@ -282,30 +306,35 @@ impl ByteTracker {
                     1.0 - (self.track_activation_min_iou * self.track_activation_iou_weight),
                 )?;
 
+            // Matches result in tracks that are officially activated
             for &(idx, sol) in matches_idx.iter() {
                 let mut track = non_active_stracks[idx].clone();
                 track.update(&remain_det_stracks[sol as usize], self.frame_id);
                 current_tracked_stracks.push(track.clone());
             }
 
+            // Unmatched non-activated tracks get marked for removal
             for &unmatch_idx in unmatch_unconfirmed_idx.iter() {
                 let mut track = non_active_stracks[unmatch_idx].clone();
                 track.mark_as_removed();
                 current_removed_stracks.push(track.clone());
             }
 
-            // add new stracks
+            // Spawn new tracks from unmatched high conf dets
             for &unmatch_idx in unmatched_detection_idx.iter() {
                 let mut track = remain_det_stracks[unmatch_idx].clone();
                 if track.get_score() < self.high_thresh {
                     continue;
                 }
                 self.track_id_count += 1;
+                // Activate is a bit of a misnomer here, track is not considered active until there
+                // is a second detection (unless this detection is on the very first frame)
                 track.activate(self.frame_id, self.track_id_count);
                 current_tracked_stracks.push(track.clone());
             }
         }
         /* ------------------ Step 5: Update state ------------------------- */
+        // Lost tracks that are past the TTL are marked for removal
         for i in 0..self.lost_stracks.len() {
             let lost_track = &self.lost_stracks[i];
             if self.frame_id - lost_track.get_frame_id() > self.max_time_lost {
@@ -314,23 +343,27 @@ impl ByteTracker {
                 current_removed_stracks.push(lost_track.clone());
             }
         }
+
+        // All tracked tracks for this frame: union of matched tracks (current_tracked_stracks), 
+        // spawned tracks(current_tracked_stracks) and reactivated tracks (refined_stracks)
         self.tracked_stracks =
             Self::joint_stracks(&current_tracked_stracks, &refined_stracks);
 
-        // calculate the number of removed objects
+        // From the lost tracks, remove any that became tracked
         let subtrack_stracks =
             Self::sub_stracks(&original_lost_stracks, &self.tracked_stracks);
+        // Add any newly lost tracks
         let joint_stracks =
             Self::joint_stracks(&subtrack_stracks, &current_lost_stracks);
+        // Remove tracks marked for removal from lost tracks
         self.lost_stracks =
             Self::sub_stracks(&joint_stracks, &self.removed_stracks);
 
-        // calculate the number of removed objects
-        self.removed_stracks = Self::joint_stracks(
-            &self.removed_stracks,
-            &current_removed_stracks,
-        );
+        // Aggregate all tracks marked for removal
+        self.removed_stracks = current_removed_stracks;
 
+        // Run a IOU base deduplication for the case where we have a tracked track and lost track
+        // with high IOU. Favor track with the longer lifetime.
         let (tracked_stracks_out, lost_stracks_out) = self
             .remove_duplicate_stracks(
                 &self.tracked_stracks,
@@ -340,6 +373,7 @@ impl ByteTracker {
         self.tracked_stracks = tracked_stracks_out;
         self.lost_stracks = lost_stracks_out;
 
+        // Output all active tracks
         let mut output_stracks = Vec::new();
         for track in self.tracked_stracks.iter() {
             if track.is_activated() {
@@ -421,11 +455,13 @@ impl ByteTracker {
         let mut a_res = Vec::new();
         let mut b_res = Vec::new();
 
+        // ious is a cost matrix (1-iou)
         let ious = Self::calc_distance(a_stracks, b_stracks, false, 0., 1., 1.);
         let mut overlapping_combinations = Vec::new();
 
         for (i, row) in ious.iter().enumerate() {
             for (j, &iou) in row.iter().enumerate() {
+                // iou > 0.85 IOU
                 if iou < 0.15 {
                     overlapping_combinations.push((i, j));
                 }
