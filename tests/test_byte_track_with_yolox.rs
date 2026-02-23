@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
 use jamtrack_rs::byte_tracker::ByteTracker;
-use jamtrack_rs::object::Object;
-use jamtrack_rs::rect::Rect;
 use nearly_eq::assert_nearly_eq;
 use serde::Deserialize;
 use serde_json;
@@ -263,8 +261,8 @@ fn test_byte_track_with_yolox() {
 
     let detection_results = detection.results;
     let tracking_results = tracking.results;
-    let fps = detection.fps;
-    let track_buffer = detection.track_buffer;
+    let _fps = detection.fps;
+    let _track_buffer = detection.track_buffer;
     let mut byte_tracker = default_byte_tracker();
 
     for frame_id in 0..detection_results.len() {

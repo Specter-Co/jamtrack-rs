@@ -588,7 +588,7 @@ impl ByteTracker {
                 let inter_area = inter_w * inter_h;
                 let union_area = aw * ah + bw * bh - inter_area + EPSILON;
                 let enclose_area = (enclose_x2 - enclose_x1) * (enclose_y2 - enclose_y1);
-                let giou = (enclose_area - union_area) / enclose_area;
+                let _giou = (enclose_area - union_area) / enclose_area;
 
                 // Aspect ratio penalty - handle potential zero dimensions
                 let v = if ah <= EPSILON || bh <= EPSILON {
