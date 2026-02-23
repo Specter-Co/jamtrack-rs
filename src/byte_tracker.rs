@@ -415,8 +415,10 @@ impl ByteTracker {
             }
         }
 
+        #[allow(unused_mut)]
         let mut res = stracks.values().cloned().collect::<Vec<_>>();
-        // Sort by track_id for deterministic ordering
+        // Sort by track_id for deterministic ordering (only when feature enabled)
+        #[cfg(feature = "deterministic")]
         res.sort_by_key(|s| s.get_track_id());
         res
     }
