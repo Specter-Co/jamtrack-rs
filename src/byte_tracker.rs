@@ -415,7 +415,9 @@ impl ByteTracker {
             }
         }
 
-        let res = stracks.values().cloned().collect::<Vec<_>>();
+        let mut res = stracks.values().cloned().collect::<Vec<_>>();
+        // Sort by track_id for deterministic ordering
+        res.sort_by_key(|s| s.get_track_id());
         res
     }
 

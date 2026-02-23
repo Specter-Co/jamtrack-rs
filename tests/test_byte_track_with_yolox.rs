@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::io::Write;
 
 use jamtrack_rs::byte_tracker::ByteTracker;
 use nearly_eq::assert_nearly_eq;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json;
 
 const TRACKING_JSON_PATH: &str = "data/jsons/tracking_results.json";
@@ -73,7 +74,7 @@ struct TrackingJson {
     results: Vec<TrackingResultJson>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct TrackingResultJson {
     frame_id: String,
     track_id: String,
@@ -81,6 +82,14 @@ struct TrackingResultJson {
     y: String,
     width: String,
     height: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TrackingJsonOutput {
+    name: String,
+    fps: usize,
+    track_buffer: usize,
+    results: Vec<TrackingResultJson>,
 }
 
 /* ----------------------------------------------------------------------------
@@ -248,6 +257,53 @@ fn read_tracking_json(path: &str) -> Tracking {
     let file = std::fs::File::open(path).unwrap();
     let tracking: TrackingJson = serde_json::from_reader(file).unwrap();
     Tracking::new(&tracking)
+}
+
+#[test]
+#[ignore] // Run with: cargo test --test test_byte_track_with_yolox regenerate_tracking_results -- --ignored
+fn regenerate_tracking_results() {
+    let detection = read_detection_json(DETECTION_JSON_PATH);
+    let detection_results = detection.results;
+    let mut byte_tracker = default_byte_tracker();
+
+    let mut results: Vec<TrackingResultJson> = Vec::new();
+
+    let mut frame_ids: Vec<usize> = detection_results.keys().cloned().collect();
+    frame_ids.sort();
+
+    for frame_id in frame_ids {
+        let objects = detection_results
+            .get(&frame_id)
+            .unwrap()
+            .iter()
+            .map(|v| <DetectionReuslt>::into(v.clone()))
+            .collect::<Vec<_>>();
+        let outputs = byte_tracker.update(objects.into_iter()).unwrap();
+
+        for output in outputs.iter() {
+            let rect = output.get_rect();
+            results.push(TrackingResultJson {
+                frame_id: frame_id.to_string(),
+                track_id: output.get_track_id().unwrap().to_string(),
+                x: rect.x().to_string(),
+                y: rect.y().to_string(),
+                width: rect.width().to_string(),
+                height: rect.height().to_string(),
+            });
+        }
+    }
+
+    let output = TrackingJsonOutput {
+        name: "ByteTrack".to_string(),
+        fps: 30,
+        track_buffer: 30,
+        results,
+    };
+
+    let json = serde_json::to_string_pretty(&output).unwrap();
+    let mut file = std::fs::File::create(TRACKING_JSON_PATH).unwrap();
+    file.write_all(json.as_bytes()).unwrap();
+    println!("Regenerated tracking results to {}", TRACKING_JSON_PATH);
 }
 
 #[test]
