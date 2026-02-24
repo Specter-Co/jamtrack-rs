@@ -1,4 +1,5 @@
 pub mod byte_tracker;
+pub mod debug_info;
 pub mod error;
 mod kalman_filter;
 mod lapjv;

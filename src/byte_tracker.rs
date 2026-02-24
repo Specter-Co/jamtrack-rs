@@ -1,4 +1,7 @@
 use crate::{
+    debug_info::{
+        DetectionInfo, FrameDebugInfo, PredictionInfo, TrackOutputInfo, TrackPoolEntry, TrackState,
+    },
     error::ByteTrackError,
     lapjv::lapjv,
     object::Object,
@@ -7,6 +10,16 @@ use crate::{
 };
 use std::{collections::HashMap, vec};
 use std::f32::consts::PI;
+
+/// Convert internal STrackState to public TrackState
+fn to_track_state(state: STrackState) -> TrackState {
+    match state {
+        STrackState::New => TrackState::New,
+        STrackState::Tracked => TrackState::Tracked,
+        STrackState::Lost => TrackState::Lost,
+        STrackState::Removed => TrackState::Removed,
+    }
+}
 /* ----------------------------------------------------------------------------
  * ByteTracker
  * ---------------------------------------------------------------------------- */
@@ -371,6 +384,393 @@ impl ByteTracker {
         }
 
         Ok(output_stracks)
+    }
+
+    /// Update tracker with debug info for visualization.
+    /// Returns both the tracked objects and detailed debug information about
+    /// each stage of the tracking algorithm.
+    // TODO: Merge update() and update_with_debug() by feature-flagging the debug info
+    // collection. This would eliminate code duplication while maintaining zero overhead
+    // for non-debug builds. Use #[cfg(feature = "debug-info")] for debug-specific code.
+    pub fn update_with_debug(
+        &mut self,
+        objects: impl Iterator<Item = Object>,
+    ) -> Result<(Vec<Object>, FrameDebugInfo), ByteTrackError> {
+        self.frame_id += 1;
+        let mut debug_info = FrameDebugInfo {
+            frame_id: self.frame_id,
+            ..Default::default()
+        };
+
+        /* ------------------ Step 1: Get detections ------------------------- */
+        let mut det_stracks = Vec::new();
+        let mut det_low_stracks = Vec::new();
+
+        for obj in objects {
+            let strack = STrack::new(
+                obj.get_detection_id(),
+                obj.get_rect(),
+                obj.get_prob(),
+                self.kalman_std_weight_pos,
+                self.kalman_std_weight_vel,
+                self.kalman_std_weight_position_meas,
+                self.kalman_std_weight_position_mot,
+                self.kalman_std_weight_velocity_mot,
+                self.kalman_std_aspect_ratio_init,
+                self.kalman_std_d_aspect_ratio_init,
+                self.kalman_std_aspect_ratio_mot,
+                self.kalman_std_d_aspect_ratio_mot,
+                self.kalman_std_aspect_ratio_meas,
+            );
+            if obj.get_prob() >= self.track_thresh {
+                debug_info.high_conf_detections.push(DetectionInfo {
+                    detection_id: obj.get_detection_id(),
+                    rect: obj.get_rect(),
+                    confidence: obj.get_prob(),
+                });
+                det_stracks.push(strack);
+            } else {
+                debug_info.low_conf_detections.push(DetectionInfo {
+                    detection_id: obj.get_detection_id(),
+                    rect: obj.get_rect(),
+                    confidence: obj.get_prob(),
+                });
+                det_low_stracks.push(strack);
+            }
+        }
+
+        // Create lists of existing stracks
+        let mut active_stracks = Vec::new();
+        let mut non_active_stracks = Vec::new();
+
+        for tracked_strack in self.tracked_stracks.iter() {
+            if !tracked_strack.is_activated() {
+                non_active_stracks.push(tracked_strack.clone());
+            } else {
+                active_stracks.push(tracked_strack.clone());
+            }
+        }
+
+        // Predict the current location with KF
+        for track in active_stracks.iter_mut() {
+            track.predict();
+        }
+
+        // KF predict step for lost tracks
+        let mut original_lost_stracks = Vec::new();
+        for track in self.lost_stracks.iter() {
+            let mut cloned = track.clone();
+            cloned.predict();
+            original_lost_stracks.push(cloned);
+        }
+
+        // Capture predictions for debug - include all track types
+        for track in active_stracks.iter() {
+            debug_info.predictions.push(PredictionInfo {
+                track_id: track.get_track_id(),
+                predicted_rect: track.get_rect(),
+                velocity: (track.get_vel_x(), track.get_vel_y()),
+                covariance_diag: track.get_covariance_diag(),
+                state: to_track_state(track.get_strack_state()),
+                is_activated: track.is_activated(),
+            });
+        }
+        for track in original_lost_stracks.iter() {
+            debug_info.predictions.push(PredictionInfo {
+                track_id: track.get_track_id(),
+                predicted_rect: track.get_rect(),
+                velocity: (track.get_vel_x(), track.get_vel_y()),
+                covariance_diag: track.get_covariance_diag(),
+                state: to_track_state(track.get_strack_state()),
+                is_activated: track.is_activated(),
+            });
+        }
+        // Also include non-activated (pending) tracks
+        for track in non_active_stracks.iter() {
+            debug_info.predictions.push(PredictionInfo {
+                track_id: track.get_track_id(),
+                predicted_rect: track.get_rect(),
+                velocity: (track.get_vel_x(), track.get_vel_y()),
+                covariance_diag: track.get_covariance_diag(),
+                state: TrackState::New, // Mark as new/pending
+                is_activated: false,
+            });
+        }
+
+        let mut strack_pool = Self::joint_stracks(&active_stracks, &original_lost_stracks);
+
+        /* ------------------ Step 2: First association ------------------------- */
+        let mut current_tracked_stracks = Vec::new();
+        let mut remain_tracked_stracks = Vec::new();
+        let mut remain_det_stracks = Vec::new();
+        let mut refined_stracks = Vec::new();
+
+        {
+            // Capture stage 1 track pool
+            debug_info.stage1.track_pool = strack_pool
+                .iter()
+                .map(|t| TrackPoolEntry {
+                    track_id: t.get_track_id(),
+                    rect: t.get_rect(),
+                    state: to_track_state(t.get_strack_state()),
+                })
+                .collect();
+            debug_info.stage1.detection_pool = (0..det_stracks.len()).collect();
+
+            let iou_distance = Self::calc_distance(
+                &strack_pool,
+                &det_stracks,
+                self.use_ciou,
+                self.track_thresh,
+                1.,
+                self.high_conf_match_iou_weight,
+            );
+            debug_info.stage1.cost_matrix = iou_distance.clone();
+
+            let (matches_idx, unmatched_track_idx, unmatched_detection_idx) = self
+                .linear_assignment(
+                    &iou_distance,
+                    strack_pool.len(),
+                    det_stracks.len(),
+                    1.0 - (self.high_conf_match_min_iou * self.high_conf_match_iou_weight),
+                )?;
+
+            debug_info.stage1.matches = matches_idx
+                .iter()
+                .map(|&(t, d)| (t, d as usize))
+                .collect();
+            debug_info.stage1.unmatched_tracks = unmatched_track_idx.clone();
+            debug_info.stage1.unmatched_detections = unmatched_detection_idx.clone();
+
+            for (idx, sol) in matches_idx {
+                debug_assert!(sol >= 0, "sol is negative {}", sol);
+                let mut track = strack_pool[idx].clone();
+                let det = &det_stracks[sol as usize];
+                let old_state = track.get_strack_state();
+                if track.get_strack_state() == STrackState::Tracked {
+                    track.update(&det, self.frame_id);
+                    current_tracked_stracks.push(track.clone());
+                    strack_pool[idx] = track.clone();
+                } else {
+                    track.re_activate(det, self.frame_id, -1);
+                    refined_stracks.push(track.clone());
+                }
+                let new_state = track.get_strack_state();
+                if old_state != new_state {
+                    debug_info.state_changes.push((
+                        track.get_track_id(),
+                        to_track_state(old_state),
+                        to_track_state(new_state),
+                    ));
+                }
+            }
+
+            for &unmatched_idx in unmatched_detection_idx.iter() {
+                remain_det_stracks.push(det_stracks[unmatched_idx].clone());
+            }
+
+            for &unmatched_idx in unmatched_track_idx.iter() {
+                if strack_pool[unmatched_idx].get_strack_state() == STrackState::Tracked {
+                    remain_tracked_stracks.push(strack_pool[unmatched_idx].clone());
+                }
+            }
+        }
+
+        /* ------------------ Step 3: Second association ------------------------- */
+        let mut current_lost_stracks = Vec::new();
+        {
+            // Capture stage 2 track pool
+            debug_info.stage2.track_pool = remain_tracked_stracks
+                .iter()
+                .map(|t| TrackPoolEntry {
+                    track_id: t.get_track_id(),
+                    rect: t.get_rect(),
+                    state: to_track_state(t.get_strack_state()),
+                })
+                .collect();
+            debug_info.stage2.detection_pool = (0..det_low_stracks.len()).collect();
+
+            let iou_distance = Self::calc_distance(
+                &remain_tracked_stracks,
+                &det_low_stracks,
+                self.use_ciou,
+                0.1,
+                self.track_thresh,
+                self.low_conf_match_iou_weight,
+            );
+            debug_info.stage2.cost_matrix = iou_distance.clone();
+
+            let (matches_idx, unmatched_track_idx, _) = self.linear_assignment(
+                &iou_distance,
+                remain_tracked_stracks.len(),
+                det_low_stracks.len(),
+                1.0 - (self.low_conf_match_min_iou * self.low_conf_match_iou_weight),
+            )?;
+
+            debug_info.stage2.matches = matches_idx
+                .iter()
+                .map(|&(t, d)| (t, d as usize))
+                .collect();
+            debug_info.stage2.unmatched_tracks = unmatched_track_idx.clone();
+
+            for (idx, sol) in matches_idx {
+                debug_assert!(sol >= 0, "sol is negative {}", sol);
+                let mut track = remain_tracked_stracks[idx].clone();
+                let det = &det_low_stracks[sol as usize];
+                let old_state = track.get_strack_state();
+                if track.get_strack_state() == STrackState::Tracked {
+                    track.update(det, self.frame_id);
+                    current_tracked_stracks.push(track.clone());
+                    remain_tracked_stracks[idx] = track.clone();
+                } else {
+                    track.re_activate(det, self.frame_id, -1);
+                    refined_stracks.push(track.clone());
+                }
+                let new_state = track.get_strack_state();
+                if old_state != new_state {
+                    debug_info.state_changes.push((
+                        track.get_track_id(),
+                        to_track_state(old_state),
+                        to_track_state(new_state),
+                    ));
+                }
+            }
+
+            for &unmatch_idx in unmatched_track_idx.iter() {
+                let mut track = remain_tracked_stracks[unmatch_idx].clone();
+                let old_state = track.get_strack_state();
+                if track.get_strack_state() != STrackState::Lost {
+                    track.mark_as_lost();
+                    current_lost_stracks.push(track.clone());
+                    debug_info.state_changes.push((
+                        track.get_track_id(),
+                        to_track_state(old_state),
+                        TrackState::Lost,
+                    ));
+                }
+            }
+        }
+
+        /* ------------------ Step 4: Init new stracks ------------------------- */
+        let mut current_removed_stracks = Vec::new();
+        {
+            // Capture stage 3 track pool
+            debug_info.stage3.track_pool = non_active_stracks
+                .iter()
+                .map(|t| TrackPoolEntry {
+                    track_id: t.get_track_id(),
+                    rect: t.get_rect(),
+                    state: to_track_state(t.get_strack_state()),
+                })
+                .collect();
+            debug_info.stage3.detection_pool = (0..remain_det_stracks.len()).collect();
+
+            let iou_distance = Self::calc_distance(
+                &non_active_stracks,
+                &remain_det_stracks,
+                self.use_ciou,
+                self.track_thresh,
+                1.,
+                self.track_activation_iou_weight,
+            );
+            debug_info.stage3.cost_matrix = iou_distance.clone();
+
+            let (matches_idx, unmatch_unconfirmed_idx, unmatched_detection_idx) = self
+                .linear_assignment(
+                    &iou_distance,
+                    non_active_stracks.len(),
+                    remain_det_stracks.len(),
+                    1.0 - (self.track_activation_min_iou * self.track_activation_iou_weight),
+                )?;
+
+            debug_info.stage3.matches = matches_idx
+                .iter()
+                .map(|&(t, d)| (t, d as usize))
+                .collect();
+            debug_info.stage3.unmatched_tracks = unmatch_unconfirmed_idx.clone();
+            debug_info.stage3.unmatched_detections = unmatched_detection_idx.clone();
+
+            for &(idx, sol) in matches_idx.iter() {
+                let mut track = non_active_stracks[idx].clone();
+                let old_state = track.get_strack_state();
+                track.update(&remain_det_stracks[sol as usize], self.frame_id);
+                current_tracked_stracks.push(track.clone());
+                let new_state = track.get_strack_state();
+                if old_state != new_state {
+                    debug_info.state_changes.push((
+                        track.get_track_id(),
+                        to_track_state(old_state),
+                        to_track_state(new_state),
+                    ));
+                }
+            }
+
+            for &unmatch_idx in unmatch_unconfirmed_idx.iter() {
+                let mut track = non_active_stracks[unmatch_idx].clone();
+                track.mark_as_removed();
+                current_removed_stracks.push(track.clone());
+                debug_info.state_changes.push((
+                    track.get_track_id(),
+                    TrackState::New,
+                    TrackState::Removed,
+                ));
+            }
+
+            for &unmatch_idx in unmatched_detection_idx.iter() {
+                let mut track = remain_det_stracks[unmatch_idx].clone();
+                if track.get_score() < self.high_thresh {
+                    continue;
+                }
+                self.track_id_count += 1;
+                track.activate(self.frame_id, self.track_id_count);
+                current_tracked_stracks.push(track.clone());
+            }
+        }
+
+        /* ------------------ Step 5: Update state ------------------------- */
+        for i in 0..self.lost_stracks.len() {
+            let lost_track = &self.lost_stracks[i];
+            if self.frame_id - lost_track.get_frame_id() > self.max_time_lost {
+                let mut track = lost_track.clone();
+                track.mark_as_removed();
+                current_removed_stracks.push(lost_track.clone());
+                debug_info.state_changes.push((
+                    track.get_track_id(),
+                    TrackState::Lost,
+                    TrackState::Removed,
+                ));
+            }
+        }
+
+        self.tracked_stracks = Self::joint_stracks(&current_tracked_stracks, &refined_stracks);
+        let subtrack_stracks = Self::sub_stracks(&original_lost_stracks, &self.tracked_stracks);
+        let joint_stracks = Self::joint_stracks(&subtrack_stracks, &current_lost_stracks);
+        self.lost_stracks = Self::sub_stracks(&joint_stracks, &self.removed_stracks);
+        self.removed_stracks = current_removed_stracks;
+
+        let (tracked_stracks_out, lost_stracks_out) =
+            self.remove_duplicate_stracks(&self.tracked_stracks, &self.lost_stracks);
+
+        self.tracked_stracks = tracked_stracks_out;
+        self.lost_stracks = lost_stracks_out;
+
+        // Capture final track outputs
+        let mut output_stracks = Vec::new();
+        for track in self.tracked_stracks.iter() {
+            debug_info.track_outputs.push(TrackOutputInfo {
+                track_id: track.get_track_id(),
+                rect: track.get_rect(),
+                velocity: (track.get_vel_x(), track.get_vel_y()),
+                confidence: track.get_score(),
+                state: to_track_state(track.get_strack_state()),
+                is_activated: track.is_activated(),
+            });
+            if track.is_activated() {
+                output_stracks.push(track.into());
+            }
+        }
+
+        Ok((output_stracks, debug_info))
     }
 
     pub(crate) fn joint_stracks(
