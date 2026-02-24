@@ -21,11 +21,37 @@
             packages = with pkgs; [
               rustc
               cargo
-              ffmpeg
+              ffmpeg_7-full
+              pkg-config
               python3
+              # For visualizer GUI
+              clang
+              llvmPackages.libclang
+              libxkbcommon
+              wayland
+              xorg.libX11
+              xorg.libXcursor
+              xorg.libXrandr
+              xorg.libXi
+              vulkan-loader
+              libGL
             ];
             shellHook = ''
               export PS1="(jamtrack) $PS1"
+              export LIBCLANG_PATH="${pkgs.llvmPackages.libclang.lib}/lib"
+              export PKG_CONFIG_PATH="${pkgs.ffmpeg_7-full.dev}/lib/pkgconfig:$PKG_CONFIG_PATH"
+              export BINDGEN_EXTRA_CLANG_ARGS="-I${pkgs.ffmpeg_7-full.dev}/include"
+              export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+                pkgs.libxkbcommon
+                pkgs.wayland
+                pkgs.xorg.libX11
+                pkgs.xorg.libXcursor
+                pkgs.xorg.libXrandr
+                pkgs.xorg.libXi
+                pkgs.vulkan-loader
+                pkgs.libGL
+                pkgs.ffmpeg_7-full.lib
+              ]}:$LD_LIBRARY_PATH"
             '';
           };
         }

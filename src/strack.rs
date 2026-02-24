@@ -163,6 +163,18 @@ impl STrack {
         return self.mean[5];
     }
 
+    /// Get diagonal of position covariance for visualization
+    /// Returns (x_var, y_var, aspect_ratio_var, height_var)
+    #[inline(always)]
+    pub(crate) fn get_covariance_diag(&self) -> [f32; 4] {
+        [
+            self.covariance[(0, 0)] as f32,
+            self.covariance[(1, 1)] as f32,
+            self.covariance[(2, 2)] as f32,
+            self.covariance[(3, 3)] as f32,
+        ]
+    }
+
     pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize) {
         self.kalman_filter.initiate(
             &mut self.mean,
