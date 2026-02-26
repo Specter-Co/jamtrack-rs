@@ -136,7 +136,7 @@ impl KalmanFilter {
         mean: &mut StateMean,      // 1x8
         covariance: &mut StateCov, // 8x8
         measurement: &DetectBox,   // 1x4
-    ) {
+    ) -> Result<(), &'static str> {
         let mut projected_mean = SMatrix::<f32, 1, 4>::zeros();
         let mut projected_covariance = SMatrix::<f32, 4, 4>::zeros();
         self.project(
@@ -147,7 +147,8 @@ impl KalmanFilter {
         );
 
         let b = (*covariance * self.update_mat.transpose()).transpose();
-        let choleskey_factor = projected_covariance.cholesky().unwrap();
+        let choleskey_factor = projected_covariance.cholesky()
+            .ok_or("Cholesky decomposition failed: covariance matrix is not positive definite")?;
         // kalman_gain: 8x4
         let kalman_gain = choleskey_factor.solve(&b);
         // innovation: 1x4
@@ -157,6 +158,7 @@ impl KalmanFilter {
         *mean += &tmp;
         *covariance -=
             kalman_gain.transpose() * projected_covariance * kalman_gain;
+        Ok(())
     }
 
     pub(crate) fn project(

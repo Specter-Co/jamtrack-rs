@@ -75,6 +75,7 @@ pub struct TrackerParams {
     pub track_buffer: usize,
     pub track_thresh: f32,
     pub high_thresh: f32,
+    pub tracker_fps: f32,  // Target FPS for tracking (0 = use all frames)
 
     // Matching params
     pub use_ciou: bool,
@@ -105,6 +106,7 @@ impl Default for TrackerParams {
             track_buffer: 30,
             track_thresh: 0.25,
             high_thresh: 0.5,
+            tracker_fps: 0.0,  // 0 means use native video FPS (all frames)
 
             use_ciou: false,
             high_conf_match_min_iou: 0.5,
@@ -163,6 +165,7 @@ pub struct VisualizerApp {
 
     // Video texture
     video_texture: Option<egui::TextureHandle>,
+    displayed_original_frame: Option<usize>,  // Original frame index currently in texture
     video_width: u32,
     video_height: u32,
 
@@ -175,6 +178,9 @@ pub struct VisualizerApp {
 
     // Hover state for highlighting related entities
     hovered_track_id: Option<usize>,
+
+    // Frame sampling for lower tracker FPS (maps display index -> original frame index)
+    sampled_frames: Vec<usize>,
 }
 
 impl VisualizerApp {
@@ -192,12 +198,14 @@ impl VisualizerApp {
             playback_fps: 5.0,
             last_frame_time: None,
             video_texture: None,
+            displayed_original_frame: None,
             video_width: 0,
             video_height: 0,
             overlay_settings: OverlaySettings::default(),
             tracker_params,
             mechanics_stage: 0,
             hovered_track_id: None,
+            sampled_frames: Vec::new(),
         };
 
         if let Some(dir) = clip_dir {
@@ -215,6 +223,7 @@ impl VisualizerApp {
         self.track_results = None;
         self.current_frame = 0;
         self.video_texture = None;
+        self.sampled_frames = Vec::new();
 
         // Load clip metadata
         match Clip::load(dir) {
@@ -268,6 +277,10 @@ impl VisualizerApp {
             None => return,
         };
 
+        // Get sampled frame indices based on tracker_fps
+        let sampled_indices = clip.get_sampled_frame_indices(self.tracker_params.tracker_fps);
+        self.sampled_frames = sampled_indices.clone();
+
         let params = &self.tracker_params;
 
         // Create ByteTracker with current parameters
@@ -277,12 +290,12 @@ impl VisualizerApp {
             params.track_thresh,
             params.high_thresh,
             params.use_ciou,
-            params.high_conf_match_min_iou,
             params.high_conf_match_iou_weight,
-            params.low_conf_match_min_iou,
+            params.high_conf_match_min_iou,
             params.low_conf_match_iou_weight,
-            params.track_activation_min_iou,
+            params.low_conf_match_min_iou,
             params.track_activation_iou_weight,
+            params.track_activation_min_iou,
             params.kalman_std_weight_pos,
             params.kalman_std_weight_vel,
             params.kalman_std_weight_position_meas,
@@ -298,8 +311,8 @@ impl VisualizerApp {
         let mut results_by_frame: HashMap<usize, Vec<TrackedObject>> = HashMap::new();
         let mut debug_by_frame: HashMap<usize, FrameDebugInfo> = HashMap::new();
 
-        // Process each frame in order
-        for frame_idx in 0..clip.frame_count {
+        // Process only sampled frames
+        for (display_idx, &frame_idx) in sampled_indices.iter().enumerate() {
             let detections = clip.get_detections(frame_idx);
 
             // Convert detections to Object format, filtering by enabled classes
@@ -329,7 +342,7 @@ impl VisualizerApp {
                 .update_with_debug(objects.into_iter())
                 .unwrap_or_default();
 
-            // Store results
+            // Store results keyed by display index (not original frame index)
             let frame_results: Vec<TrackedObject> = tracked
                 .into_iter()
                 .map(|obj| TrackedObject {
@@ -340,8 +353,8 @@ impl VisualizerApp {
                 })
                 .collect();
 
-            results_by_frame.insert(frame_idx, frame_results);
-            debug_by_frame.insert(frame_idx, debug_info);
+            results_by_frame.insert(display_idx, frame_results);
+            debug_by_frame.insert(display_idx, debug_info);
         }
 
         self.track_results = Some(TrackResults {
@@ -351,7 +364,17 @@ impl VisualizerApp {
         self.last_tracker_params = self.tracker_params.clone();
         self.last_enabled_classes = self.overlay_settings.enabled_classes.clone();
 
-        eprintln!("Tracker finished processing {} frames", clip.frame_count);
+        // Reset all playback/video state after re-running tracker
+        self.current_frame = 0;
+        self.mechanics_stage = 0;
+        self.video_texture = None;
+        self.displayed_original_frame = None;
+        self.hovered_track_id = None;
+        self.is_playing = false;
+        self.last_frame_time = None;
+
+        eprintln!("Tracker finished processing {} sampled frames (from {} total)",
+            sampled_indices.len(), clip.frame_count);
     }
 
     /// Check if tracker params or class filter changed and re-run if needed
@@ -364,7 +387,30 @@ impl VisualizerApp {
     }
 
     fn frame_count(&self) -> usize {
-        self.clip.as_ref().map(|c| c.frame_count).unwrap_or(0)
+        if self.sampled_frames.is_empty() {
+            self.clip.as_ref().map(|c| c.frame_count).unwrap_or(0)
+        } else {
+            self.sampled_frames.len()
+        }
+    }
+
+    /// Get the original frame index for a display frame index
+    fn get_original_frame_idx(&self, display_idx: usize) -> usize {
+        if self.sampled_frames.is_empty() {
+            display_idx
+        } else {
+            self.sampled_frames.get(display_idx).copied().unwrap_or(0)
+        }
+    }
+
+    /// Get the display frame index for an original frame index (reverse lookup)
+    /// Returns None if the original frame is not in the sampled set
+    fn get_display_idx_for_original(&self, original_idx: usize) -> Option<usize> {
+        if self.sampled_frames.is_empty() {
+            Some(original_idx)
+        } else {
+            self.sampled_frames.iter().position(|&idx| idx == original_idx)
+        }
     }
 }
 

@@ -211,7 +211,7 @@ impl ByteTracker {
                 let mut track = strack_pool[idx].clone();
                 let det = &det_stracks[sol as usize];
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(&det, self.frame_id);
+                    track.update(&det, self.frame_id)?;
                     current_tracked_stracks.push(track.clone());
                     strack_pool[idx] = track; // update the track
                 } else {
@@ -219,7 +219,7 @@ impl ByteTracker {
                         det,
                         self.frame_id,
                         -1, /* default value */
-                    );
+                    )?;
                     refined_stracks.push(track.clone());
                 }
             }
@@ -266,7 +266,7 @@ impl ByteTracker {
                 let mut track = remain_tracked_stracks[idx].clone();
                 let det = &det_low_stracks[sol as usize];
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(det, self.frame_id);
+                    track.update(det, self.frame_id)?;
                     current_tracked_stracks.push(track.clone());
                     remain_tracked_stracks[idx] = track; // update the track
                 } else {
@@ -274,7 +274,7 @@ impl ByteTracker {
                         det,
                         self.frame_id,
                         -1, /* default value */
-                    );
+                    )?;
                     refined_stracks.push(track.clone());
                 }
             }
@@ -311,7 +311,7 @@ impl ByteTracker {
             // Matches result in tracks that are officially activated
             for &(idx, sol) in matches_idx.iter() {
                 let mut track = non_active_stracks[idx].clone();
-                track.update(&remain_det_stracks[sol as usize], self.frame_id);
+                track.update(&remain_det_stracks[sol as usize], self.frame_id)?;
                 current_tracked_stracks.push(track.clone());
             }
 
@@ -548,11 +548,11 @@ impl ByteTracker {
                 let det = &det_stracks[sol as usize];
                 let old_state = track.get_strack_state();
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(&det, self.frame_id);
+                    track.update(&det, self.frame_id)?;
                     current_tracked_stracks.push(track.clone());
                     strack_pool[idx] = track.clone();
                 } else {
-                    track.re_activate(det, self.frame_id, -1);
+                    track.re_activate(det, self.frame_id, -1)?;
                     refined_stracks.push(track.clone());
                 }
                 let new_state = track.get_strack_state();
@@ -619,11 +619,11 @@ impl ByteTracker {
                 let det = &det_low_stracks[sol as usize];
                 let old_state = track.get_strack_state();
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(det, self.frame_id);
+                    track.update(det, self.frame_id)?;
                     current_tracked_stracks.push(track.clone());
                     remain_tracked_stracks[idx] = track.clone();
                 } else {
-                    track.re_activate(det, self.frame_id, -1);
+                    track.re_activate(det, self.frame_id, -1)?;
                     refined_stracks.push(track.clone());
                 }
                 let new_state = track.get_strack_state();
@@ -693,7 +693,7 @@ impl ByteTracker {
             for &(idx, sol) in matches_idx.iter() {
                 let mut track = non_active_stracks[idx].clone();
                 let old_state = track.get_strack_state();
-                track.update(&remain_det_stracks[sol as usize], self.frame_id);
+                track.update(&remain_det_stracks[sol as usize], self.frame_id)?;
                 current_tracked_stracks.push(track.clone());
                 let new_state = track.get_strack_state();
                 if old_state != new_state {

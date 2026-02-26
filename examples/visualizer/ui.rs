@@ -32,11 +32,13 @@ pub fn render(app: &mut VisualizerApp, ctx: &egui::Context) {
         });
     });
 
-    // Left panel with controls
+    // Left panel with controls (scrollable)
     egui::SidePanel::left("controls_panel")
         .default_width(250.0)
         .show(ctx, |ui| {
-            render_controls(app, ui);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                render_controls(app, ui);
+            });
         });
 
     // Bottom panel with timeline
@@ -238,6 +240,9 @@ fn render_controls(app: &mut VisualizerApp, ui: &mut egui::Ui) {
     egui::CollapsingHeader::new("Core Parameters")
         .default_open(true)
         .show(ui, |ui| {
+            ui.label("Tracker FPS (0=native):");
+            ui.add(egui::Slider::new(&mut app.tracker_params.tracker_fps, 0.0..=60.0));
+            ui.separator();
             ui.label("Track Thresh (min conf):");
             ui.add(egui::Slider::new(&mut app.tracker_params.track_thresh, 0.0..=1.0));
             ui.label("High Thresh (new track):");
@@ -335,16 +340,17 @@ fn render_timeline(app: &mut VisualizerApp, ui: &mut egui::Ui, ctx: &egui::Conte
             app.mechanics_stage = 0; // Reset to first stage when jumping frames
         }
 
-        // Timestamp display
+        // Timestamp display (use original frame index)
+        let original_frame_idx = app.get_original_frame_idx(app.current_frame);
         if let Some(clip) = &app.clip {
-            if let Some(ts) = clip.get_timestamp(app.current_frame) {
+            if let Some(ts) = clip.get_timestamp(original_frame_idx) {
                 ui.label(format!("{}ms", ts));
             }
         }
 
-        // Detection count for current frame
+        // Detection count for current frame (use original frame index)
         if let Some(clip) = &app.clip {
-            let det_count = clip.get_detections(app.current_frame).len();
+            let det_count = clip.get_detections(original_frame_idx).len();
             ui.label(format!("{} detections", det_count));
         }
     });
@@ -363,11 +369,15 @@ fn render_video(app: &mut VisualizerApp, ui: &mut egui::Ui, ctx: &egui::Context)
         return;
     }
 
-    // Request frame from decoder
+    // Request frame from decoder (using original frame index for sampled playback)
+    let requested_frame_idx = app.get_original_frame_idx(app.current_frame);
     let decoder = app.decoder.as_mut().unwrap();
-    let frame_result = decoder.request_frame(app.current_frame);
+    let frame_result = decoder.request_frame(requested_frame_idx);
 
     if let Some(frame) = frame_result {
+        // Track which frame is actually in the texture
+        app.displayed_original_frame = Some(frame.frame_idx);
+
         // Update texture
         let width = app.video_width as usize;
         let height = app.video_height as usize;
@@ -423,23 +433,32 @@ fn render_video(app: &mut VisualizerApp, ui: &mut egui::Ui, ctx: &egui::Context)
             Color32::WHITE,
         );
 
-        // Draw overlays and update hover state
+        // Draw overlays for the frame that's actually displayed in the texture
+        // This keeps overlays in sync with the video even when decoder returns a fallback frame
         if let Some(clip) = &app.clip {
-            app.hovered_track_id = drawing::draw_overlays(
-                &painter,
-                rect,
-                clip,
-                app.current_frame,
-                &app.overlay_settings,
-                app.track_results.as_ref(),
-                app.mechanics_stage,
-                mouse_pos,
-                app.hovered_track_id,
-            );
+            if let Some(displayed_original) = app.displayed_original_frame {
+                // Find the display index for the frame that's actually shown
+                // If this frame isn't in our sampled set, use current_frame as fallback
+                let display_idx = app.get_display_idx_for_original(displayed_original)
+                    .unwrap_or(app.current_frame);
 
-            // Draw legend when mechanics visualization is enabled
-            if app.overlay_settings.show_bytetrack_mechanics {
-                drawing::draw_mechanics_legend(&painter, rect, app.mechanics_stage);
+                app.hovered_track_id = drawing::draw_overlays(
+                    &painter,
+                    rect,
+                    clip,
+                    display_idx,            // display index for track results
+                    displayed_original,     // original index for detections
+                    &app.overlay_settings,
+                    app.track_results.as_ref(),
+                    app.mechanics_stage,
+                    mouse_pos,
+                    app.hovered_track_id,
+                );
+
+                // Draw legend when mechanics visualization is enabled
+                if app.overlay_settings.show_bytetrack_mechanics {
+                    drawing::draw_mechanics_legend(&painter, rect, app.mechanics_stage);
+                }
             }
         }
     }

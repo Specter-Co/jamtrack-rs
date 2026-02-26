@@ -140,7 +140,7 @@ fn test_update() {
     ]);
 
     let measurement = SMatrix::<f32, 1, 4>::from_iterator([1.0, 2.0, 3.0, 4.0]);
-    kalman_filter.update(&mut mean, &mut covariance, &measurement);
+    kalman_filter.update(&mut mean, &mut covariance, &measurement).unwrap();
 
     // Assert the values of mean and covariance after update
     assert_eq!(
@@ -187,7 +187,7 @@ fn test_complex_predict() {
     kalman_filter.initiate(&mut mean, &mut covariance, &measurement);
 
     for _ in 0..10 {
-        kalman_filter.update(&mut mean, &mut covariance, &measurement);
+        kalman_filter.update(&mut mean, &mut covariance, &measurement).unwrap();
         kalman_filter.predict(&mut mean, &mut covariance);
     }
     kalman_filter.predict(&mut mean, &mut covariance);

@@ -178,6 +178,39 @@ impl Clip {
         self.video_width = width;
         self.video_height = height;
     }
+
+    /// Returns frame indices to process at the target FPS.
+    /// If target_fps is 0 or >= native fps, returns all frames.
+    pub fn get_sampled_frame_indices(&self, target_fps: f32) -> Vec<usize> {
+        if target_fps <= 0.0 || self.frame_count < 2 {
+            return (0..self.frame_count).collect();
+        }
+
+        // Calculate native FPS from timestamps
+        let first_ts = self.timestamps.first().copied().unwrap_or(0);
+        let last_ts = self.timestamps.last().copied().unwrap_or(0);
+        let duration_ms = last_ts.saturating_sub(first_ts);
+
+        if duration_ms == 0 {
+            return (0..self.frame_count).collect();
+        }
+
+        let native_fps = (self.frame_count as f64 * 1000.0) / duration_ms as f64;
+
+        if target_fps as f64 >= native_fps {
+            return (0..self.frame_count).collect();
+        }
+
+        // Sample frames at target FPS intervals
+        let step = native_fps / target_fps as f64;
+        let mut indices = Vec::new();
+        let mut pos = 0.0;
+        while (pos as usize) < self.frame_count {
+            indices.push(pos as usize);
+            pos += step;
+        }
+        indices
+    }
 }
 
 fn find_file_with_prefix(dir: &Path, prefix: &str, suffix: &str) -> Result<PathBuf, String> {

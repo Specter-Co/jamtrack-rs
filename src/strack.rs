@@ -1,4 +1,5 @@
 use crate::{
+    error::ByteTrackError,
     kalman_filter::{KalmanFilter, StateCov, StateMean},
     rect::Rect,
 };
@@ -199,12 +200,12 @@ impl STrack {
         new_track: &STrack,
         frame_id: usize,
         new_track_id: isize,
-    ) {
+    ) -> Result<(), ByteTrackError> {
         self.kalman_filter.update(
             &mut self.mean,
             &mut self.covariance,
             &new_track.get_rect().get_xyah(),
-        );
+        ).map_err(|e| ByteTrackError::KalmanFilterError(e.to_string()))?;
         self.update_rect();
 
         self.state = STrackState::Tracked;
@@ -218,6 +219,7 @@ impl STrack {
         self.detection_id_last = new_track.detection_id_last;
         self.frame_id = frame_id;
         self.tracklet_len = 0;
+        Ok(())
     }
 
     pub(crate) fn predict(&mut self) {
@@ -229,12 +231,12 @@ impl STrack {
         self.update_rect();
     }
 
-    pub(crate) fn update(&mut self, new_track: &STrack, frame_id: usize) {
+    pub(crate) fn update(&mut self, new_track: &STrack, frame_id: usize) -> Result<(), ByteTrackError> {
         self.kalman_filter.update(
             &mut self.mean,
             &mut self.covariance,
             &new_track.get_rect().get_xyah(),
-        );
+        ).map_err(|e| ByteTrackError::KalmanFilterError(e.to_string()))?;
 
         self.update_rect();
 
@@ -244,6 +246,7 @@ impl STrack {
         self.frame_id = frame_id;
         self.detection_id_last = new_track.get_detection_id_last();
         self.tracklet_len += 1;
+        Ok(())
     }
 
     pub(crate) fn mark_as_lost(&mut self) {
