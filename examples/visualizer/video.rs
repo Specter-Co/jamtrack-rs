@@ -87,6 +87,7 @@ impl VideoMeta {
 
 pub struct FrameResult<'a> {
     pub frame: &'a Vec<u32>,
+    pub frame_idx: usize,  // The actual frame index being returned
 }
 
 #[allow(dead_code)]
@@ -137,13 +138,14 @@ impl DecoderHandle {
         }
         if self.cache.contains_key(&frame_idx) {
             self.pending_request = None;
-            return self.cache.get(&frame_idx).map(|f| FrameResult { frame: f });
+            return self.cache.get(&frame_idx).map(|f| FrameResult { frame: f, frame_idx });
         }
         if self.pending_request != Some(frame_idx) {
             let _ = self.cmd_tx.try_send(DecoderCommand::RequestFrame(frame_idx));
             self.pending_request = Some(frame_idx);
         }
-        self.find_nearest_cached(frame_idx).map(|f| FrameResult { frame: f })
+        self.find_nearest_cached_with_idx(frame_idx)
+            .map(|(idx, f)| FrameResult { frame: f, frame_idx: idx })
     }
 
     fn cache_insert(&mut self, idx: usize, buf: Vec<u32>) {
@@ -158,14 +160,14 @@ impl DecoderHandle {
         self.cache_order.push(idx);
     }
 
-    fn find_nearest_cached(&self, frame_idx: usize) -> Option<&Vec<u32>> {
+    fn find_nearest_cached_with_idx(&self, frame_idx: usize) -> Option<(usize, &Vec<u32>)> {
         let mut best_idx = None;
         let mut best_dist = usize::MAX;
         for &cached_idx in self.cache.keys() {
             let dist = (cached_idx as isize - frame_idx as isize).unsigned_abs();
             if dist < best_dist { best_dist = dist; best_idx = Some(cached_idx); }
         }
-        best_idx.and_then(|idx| self.cache.get(&idx))
+        best_idx.and_then(|idx| self.cache.get(&idx).map(|f| (idx, f)))
     }
 }
 

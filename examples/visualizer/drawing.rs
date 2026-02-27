@@ -48,11 +48,16 @@ const COLOR_HIGHLIGHT: Color32 = Color32::from_rgb(255, 255, 0);   // Yellow hig
 
 /// Draw all overlays for the current frame
 /// Returns the track_id being hovered (if any)
+///
+/// # Arguments
+/// * `display_frame_idx` - Index for looking up track results (after sampling)
+/// * `original_frame_idx` - Index for looking up detections from clip (before sampling)
 pub fn draw_overlays(
     painter: &Painter,
     video_rect: Rect,
     clip: &Clip,
-    frame_idx: usize,
+    display_frame_idx: usize,
+    original_frame_idx: usize,
     settings: &OverlaySettings,
     track_results: Option<&TrackResults>,
     mechanics_stage: usize,
@@ -64,7 +69,7 @@ pub fn draw_overlays(
 
     // Draw raw detections (faded, if enabled)
     if settings.show_detections {
-        let detections = clip.get_detections(frame_idx);
+        let detections = clip.get_detections(original_frame_idx);
         for det in detections {
             if det.confidence < settings.detection_min_confidence {
                 continue;
@@ -106,7 +111,7 @@ pub fn draw_overlays(
     // ByteTrack mechanics step-by-step visualization
     if settings.show_bytetrack_mechanics {
         if let Some(results) = track_results {
-            if let Some(debug_info) = results.debug_by_frame.get(&frame_idx) {
+            if let Some(debug_info) = results.debug_by_frame.get(&display_frame_idx) {
                 new_hovered = draw_bytetrack_mechanics(
                     painter, video_rect, debug_info, mechanics_stage, scale_x, scale_y,
                     mouse_pos, current_hovered,
@@ -119,7 +124,7 @@ pub fn draw_overlays(
     // Draw ByteTrack results (solid, if enabled) - normal mode
     if settings.show_tracks {
         if let Some(results) = track_results {
-            let tracks = results.results_by_frame.get(&frame_idx).map(|v| v.as_slice()).unwrap_or(&[]);
+            let tracks = results.results_by_frame.get(&display_frame_idx).map(|v| v.as_slice()).unwrap_or(&[]);
 
             for track in tracks {
                 draw_track(painter, video_rect, track, settings, scale_x, scale_y);

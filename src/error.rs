@@ -8,4 +8,6 @@ pub enum ByteTrackError {
     ExecLapjvError(String),
     #[error("Error: {0}")]
     ByteTrackerError(String),
+    #[error("Kalman filter error: {0}")]
+    KalmanFilterError(String),
 }
