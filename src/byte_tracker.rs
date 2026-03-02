@@ -63,9 +63,16 @@ pub struct TrackBufferSizes {
 }
 
 impl ByteTracker {
+    /// Create a new ByteTracker.
+    ///
+    /// # Arguments
+    /// * `frame_rate` - Expected frame rate (used for track buffer calculation)
+    /// * `track_buffer` - Track buffer duration in seconds (tracks are kept for this long after being lost)
+    /// * `track_thresh` - Minimum confidence for low-confidence detection pool
+    /// * `high_thresh` - Minimum confidence to spawn new tracks
     pub fn new(
         frame_rate: usize,
-        track_buffer: usize,
+        track_buffer: f32,
         track_thresh: f32,
         high_thresh: f32,
         use_ciou: bool,
@@ -106,8 +113,7 @@ impl ByteTracker {
             kalman_std_aspect_ratio_mot,
             kalman_std_d_aspect_ratio_mot,
             kalman_std_aspect_ratio_meas,
-            max_time_lost: (track_buffer as f32 * frame_rate as f32 / 30.0)
-                as usize,
+            max_time_lost: (track_buffer * frame_rate as f32) as usize,
 
             frame_id: 0,
             track_id_count: 0,
@@ -116,6 +122,24 @@ impl ByteTracker {
             lost_stracks: Vec::new(),
             removed_stracks: Vec::new(),
         }
+    }
+
+    /// Update tracker with detections and timestamp.
+    ///
+    /// This is the recommended API when you have accurate timestamps for each frame.
+    /// The timestamp is used for proper time-based track management.
+    ///
+    /// # Arguments
+    /// * `objects` - Iterator of detected objects
+    /// * `_timestamp_ms` - Timestamp in milliseconds (reserved for future use)
+    pub fn update_with_timestamp(
+        &mut self,
+        objects: impl Iterator<Item = Object>,
+        _timestamp_ms: u64,
+    ) -> Result<Vec<Object>, ByteTrackError> {
+        // For now, delegate to update(). Full timestamp support will be added
+        // in the nonuniform_time branch with proper Kalman filter integration.
+        self.update(objects)
     }
 
     pub fn track_buffer_sizes(&self) -> TrackBufferSizes {
@@ -771,6 +795,24 @@ impl ByteTracker {
         }
 
         Ok((output_stracks, debug_info))
+    }
+
+    /// Update tracker with debug info and timestamp.
+    ///
+    /// This is the recommended API when you need both debug visualization data
+    /// and accurate timestamps for each frame.
+    ///
+    /// # Arguments
+    /// * `objects` - Iterator of detected objects
+    /// * `_timestamp_ms` - Timestamp in milliseconds (reserved for future use)
+    pub fn update_with_debug_timestamp(
+        &mut self,
+        objects: impl Iterator<Item = Object>,
+        _timestamp_ms: u64,
+    ) -> Result<(Vec<Object>, FrameDebugInfo), ByteTrackError> {
+        // For now, delegate to update_with_debug(). Full timestamp support will be added
+        // in the nonuniform_time branch with proper Kalman filter integration.
+        self.update_with_debug(objects)
     }
 
     pub(crate) fn joint_stracks(

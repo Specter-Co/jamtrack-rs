@@ -1,6 +1,8 @@
 pub mod byte_tracker;
+pub mod dataset;
 pub mod debug_info;
 pub mod error;
+pub mod evaluation;
 mod kalman_filter;
 mod lapjv;
 pub mod object;

@@ -1,6 +1,6 @@
 //! Overlay drawing for the visualizer.
 
-use crate::dataset::Clip;
+use jamtrack_rs::dataset::Clip;
 use crate::{OverlaySettings, TrackResults, TrackedObject};
 use eframe::egui::{self, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 use jamtrack_rs::debug_info::{AssociationStageInfo, FrameDebugInfo};
@@ -48,11 +48,16 @@ const COLOR_HIGHLIGHT: Color32 = Color32::from_rgb(255, 255, 0);   // Yellow hig
 
 /// Draw all overlays for the current frame
 /// Returns the track_id being hovered (if any)
+///
+/// # Arguments
+/// * `display_frame_idx` - Index for looking up track results (after sampling)
+/// * `original_frame_idx` - Index for looking up detections from clip (before sampling)
 pub fn draw_overlays(
     painter: &Painter,
     video_rect: Rect,
     clip: &Clip,
-    frame_idx: usize,
+    display_frame_idx: usize,
+    original_frame_idx: usize,
     settings: &OverlaySettings,
     track_results: Option<&TrackResults>,
     mechanics_stage: usize,
@@ -64,7 +69,7 @@ pub fn draw_overlays(
 
     // Draw raw detections (faded, if enabled)
     if settings.show_detections {
-        let detections = clip.get_detections(frame_idx);
+        let detections = clip.get_detections(original_frame_idx);
         for det in detections {
             if det.confidence < settings.detection_min_confidence {
                 continue;
@@ -106,7 +111,7 @@ pub fn draw_overlays(
     // ByteTrack mechanics step-by-step visualization
     if settings.show_bytetrack_mechanics {
         if let Some(results) = track_results {
-            if let Some(debug_info) = results.debug_by_frame.get(&frame_idx) {
+            if let Some(debug_info) = results.debug_by_frame.get(&display_frame_idx) {
                 new_hovered = draw_bytetrack_mechanics(
                     painter, video_rect, debug_info, mechanics_stage, scale_x, scale_y,
                     mouse_pos, current_hovered,
@@ -119,7 +124,7 @@ pub fn draw_overlays(
     // Draw ByteTrack results (solid, if enabled) - normal mode
     if settings.show_tracks {
         if let Some(results) = track_results {
-            let tracks = results.results_by_frame.get(&frame_idx).map(|v| v.as_slice()).unwrap_or(&[]);
+            let tracks = results.results_by_frame.get(&display_frame_idx).map(|v| v.as_slice()).unwrap_or(&[]);
 
             for track in tracks {
                 draw_track(painter, video_rect, track, settings, scale_x, scale_y);
@@ -633,4 +638,241 @@ enum LegendItem {
     SolidBox(Color32),
     DashedBox(Color32),
     Line(Color32),
+}
+
+// Color constants for evaluation visualization
+const COLOR_GT_BOX: Color32 = Color32::from_rgb(0, 255, 0);       // Green for ground truth
+const COLOR_FALSE_POSITIVE: Color32 = Color32::from_rgb(255, 0, 0);  // Red for FP
+const COLOR_FALSE_NEGATIVE: Color32 = Color32::from_rgb(255, 165, 0); // Orange for FN
+const COLOR_ID_SWITCH: Color32 = Color32::from_rgb(255, 0, 255);   // Magenta for ID switch
+
+use jamtrack_rs::evaluation::FrameEvalResult;
+
+/// Draw evaluation overlays (ground truth, FP/FN, ID switches)
+pub fn draw_eval_overlays(
+    painter: &Painter,
+    video_rect: Rect,
+    video_width: u32,
+    video_height: u32,
+    settings: &OverlaySettings,
+    gt_bboxes: Option<&Vec<(u64, (f32, f32, f32, f32))>>,
+    frame_eval: Option<&FrameEvalResult>,
+    track_results: Option<&TrackResults>,
+    display_frame_idx: usize,
+) {
+    if !settings.show_eval_overlays {
+        return;
+    }
+
+    let scale_x = video_rect.width() / video_width as f32;
+    let scale_y = video_rect.height() / video_height as f32;
+
+    // Get track bboxes for highlighting FP/FN
+    let tracks = track_results
+        .and_then(|r| r.results_by_frame.get(&display_frame_idx))
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    // Build a map of track_id -> bbox for tracks
+    let track_map: std::collections::HashMap<u64, &TrackedObject> = tracks
+        .iter()
+        .map(|t| (t.track_id as u64, t))
+        .collect();
+
+    // Build a map of gt_track_id -> bbox for ground truth
+    let gt_map: std::collections::HashMap<u64, (f32, f32, f32, f32)> = gt_bboxes
+        .map(|gts| gts.iter().cloned().collect())
+        .unwrap_or_default();
+
+    // Draw ground truth boxes (dashed green)
+    if settings.show_gt_boxes {
+        if let Some(gts) = gt_bboxes {
+            for (gt_id, (x, y, w, h)) in gts {
+                let box_rect = Rect::from_min_size(
+                    Pos2::new(
+                        video_rect.min.x + x * scale_x,
+                        video_rect.min.y + y * scale_y,
+                    ),
+                    Vec2::new(w * scale_x, h * scale_y),
+                );
+
+                draw_dashed_rect(painter, box_rect, Stroke::new(2.0, COLOR_GT_BOX), 6.0, 4.0);
+
+                // Label
+                painter.text(
+                    Pos2::new(box_rect.max.x - 2.0, box_rect.min.y - 12.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    format!("GT:{}", gt_id),
+                    FontId::proportional(10.0),
+                    COLOR_GT_BOX,
+                );
+            }
+        }
+    }
+
+    if let Some(eval) = frame_eval {
+        // Draw false positives (red X on predicted tracks with no GT match)
+        if settings.show_false_positives {
+            for &fp_track_id in &eval.false_positives {
+                if let Some(track) = track_map.get(&fp_track_id) {
+                    let rect = &track.rect;
+                    let box_rect = Rect::from_min_size(
+                        Pos2::new(
+                            video_rect.min.x + rect.x() * scale_x,
+                            video_rect.min.y + rect.y() * scale_y,
+                        ),
+                        Vec2::new(rect.width() * scale_x, rect.height() * scale_y),
+                    );
+
+                    // Draw red X through the box
+                    painter.line_segment(
+                        [box_rect.left_top(), box_rect.right_bottom()],
+                        Stroke::new(3.0, COLOR_FALSE_POSITIVE),
+                    );
+                    painter.line_segment(
+                        [box_rect.right_top(), box_rect.left_bottom()],
+                        Stroke::new(3.0, COLOR_FALSE_POSITIVE),
+                    );
+
+                    // Label
+                    painter.text(
+                        Pos2::new(box_rect.min.x + 2.0, box_rect.max.y + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        "FP",
+                        FontId::proportional(12.0),
+                        COLOR_FALSE_POSITIVE,
+                    );
+                }
+            }
+        }
+
+        // Draw false negatives (orange circle on GT with no prediction match)
+        if settings.show_false_negatives {
+            for &fn_gt_id in &eval.false_negatives {
+                if let Some(&(x, y, w, h)) = gt_map.get(&fn_gt_id) {
+                    let box_rect = Rect::from_min_size(
+                        Pos2::new(
+                            video_rect.min.x + x * scale_x,
+                            video_rect.min.y + y * scale_y,
+                        ),
+                        Vec2::new(w * scale_x, h * scale_y),
+                    );
+
+                    // Draw orange circle in center
+                    painter.circle_stroke(
+                        box_rect.center(),
+                        (box_rect.width().min(box_rect.height()) / 4.0).max(10.0),
+                        Stroke::new(3.0, COLOR_FALSE_NEGATIVE),
+                    );
+
+                    // Label
+                    painter.text(
+                        Pos2::new(box_rect.min.x + 2.0, box_rect.max.y + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        format!("FN:{}", fn_gt_id),
+                        FontId::proportional(12.0),
+                        COLOR_FALSE_NEGATIVE,
+                    );
+                }
+            }
+        }
+
+        // Draw ID switches (magenta highlight on track)
+        if settings.show_id_switches {
+            for &(pred_id, old_gt, new_gt) in &eval.id_switches {
+                if let Some(track) = track_map.get(&pred_id) {
+                    let rect = &track.rect;
+                    let box_rect = Rect::from_min_size(
+                        Pos2::new(
+                            video_rect.min.x + rect.x() * scale_x,
+                            video_rect.min.y + rect.y() * scale_y,
+                        ),
+                        Vec2::new(rect.width() * scale_x, rect.height() * scale_y),
+                    );
+
+                    // Draw thick magenta border
+                    painter.rect_stroke(box_rect, 0.0, Stroke::new(4.0, COLOR_ID_SWITCH));
+
+                    // Label showing ID switch
+                    let label = format!("IDSW: {}->{}", old_gt, new_gt);
+                    painter.text(
+                        Pos2::new(box_rect.center().x, box_rect.min.y - 16.0),
+                        egui::Align2::CENTER_BOTTOM,
+                        label,
+                        FontId::proportional(12.0),
+                        COLOR_ID_SWITCH,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Draw evaluation legend
+pub fn draw_eval_legend(painter: &Painter, video_rect: Rect, settings: &OverlaySettings) {
+    if !settings.show_eval_overlays {
+        return;
+    }
+
+    let legend_height = 28.0;
+    let legend_rect = Rect::from_min_max(
+        Pos2::new(video_rect.min.x, video_rect.max.y - legend_height),
+        video_rect.max,
+    );
+
+    // Semi-transparent background
+    painter.rect_filled(legend_rect, 0.0, Color32::from_black_alpha(200));
+
+    let y = legend_rect.min.y + 7.0;
+    let mut x = legend_rect.min.x + 10.0;
+    let spacing = 20.0;
+    let box_size = 14.0;
+
+    let items: Vec<(LegendItem, &str, bool)> = vec![
+        (LegendItem::DashedBox(COLOR_GT_BOX), "Ground Truth", settings.show_gt_boxes),
+        (LegendItem::Line(COLOR_FALSE_POSITIVE), "False Positive", settings.show_false_positives),
+        (LegendItem::SolidBox(COLOR_FALSE_NEGATIVE), "False Negative", settings.show_false_negatives),
+        (LegendItem::SolidBox(COLOR_ID_SWITCH), "ID Switch", settings.show_id_switches),
+    ];
+
+    for (item, label, enabled) in items {
+        if !enabled {
+            continue;
+        }
+
+        let item_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(box_size, box_size));
+
+        match item {
+            LegendItem::SolidBox(color) => {
+                painter.rect_stroke(item_rect, 0.0, Stroke::new(2.0, color));
+            }
+            LegendItem::DashedBox(color) => {
+                draw_dashed_rect(painter, item_rect, Stroke::new(2.0, color), 4.0, 2.0);
+            }
+            LegendItem::Line(color) => {
+                // Draw X for FP
+                painter.line_segment(
+                    [item_rect.left_top(), item_rect.right_bottom()],
+                    Stroke::new(2.0, color),
+                );
+                painter.line_segment(
+                    [item_rect.right_top(), item_rect.left_bottom()],
+                    Stroke::new(2.0, color),
+                );
+            }
+        }
+
+        x += box_size + 5.0;
+
+        painter.text(
+            Pos2::new(x, y + 1.0),
+            egui::Align2::LEFT_TOP,
+            label,
+            FontId::proportional(11.0),
+            Color32::WHITE,
+        );
+
+        let text_width = label.len() as f32 * 6.0;
+        x += text_width + spacing;
+    }
 }
