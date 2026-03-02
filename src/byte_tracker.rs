@@ -45,10 +45,11 @@ pub struct ByteTracker {
     kalman_std_aspect_ratio_mot: f32,
     kalman_std_d_aspect_ratio_mot: f32,
     kalman_std_aspect_ratio_meas: f32,
-    max_time_lost: usize,
+    track_buffer_ms: u64,
 
     frame_id: usize,
     track_id_count: usize,
+    last_timestamp_ms: Option<u64>,
 
     tracked_stracks: Vec<STrack>,
     lost_stracks: Vec<STrack>,
@@ -62,16 +63,17 @@ pub struct TrackBufferSizes {
     pub tracked: usize,
 }
 
+/// Default dt when no timestamp is provided (100ms)
+const DEFAULT_DT_SECONDS: f32 = 0.1;
+
 impl ByteTracker {
     /// Create a new ByteTracker.
     ///
     /// # Arguments
-    /// * `frame_rate` - Expected frame rate (used for track buffer calculation)
     /// * `track_buffer` - Track buffer duration in seconds (tracks are kept for this long after being lost)
     /// * `track_thresh` - Minimum confidence for low-confidence detection pool
     /// * `high_thresh` - Minimum confidence to spawn new tracks
     pub fn new(
-        frame_rate: usize,
         track_buffer: f32,
         track_thresh: f32,
         high_thresh: f32,
@@ -113,33 +115,16 @@ impl ByteTracker {
             kalman_std_aspect_ratio_mot,
             kalman_std_d_aspect_ratio_mot,
             kalman_std_aspect_ratio_meas,
-            max_time_lost: (track_buffer * frame_rate as f32) as usize,
+            track_buffer_ms: (track_buffer * 1000.0) as u64,
 
             frame_id: 0,
             track_id_count: 0,
+            last_timestamp_ms: None,
 
             tracked_stracks: Vec::new(),
             lost_stracks: Vec::new(),
             removed_stracks: Vec::new(),
         }
-    }
-
-    /// Update tracker with detections and timestamp.
-    ///
-    /// This is the recommended API when you have accurate timestamps for each frame.
-    /// The timestamp is used for proper time-based track management.
-    ///
-    /// # Arguments
-    /// * `objects` - Iterator of detected objects
-    /// * `_timestamp_ms` - Timestamp in milliseconds (reserved for future use)
-    pub fn update_with_timestamp(
-        &mut self,
-        objects: impl Iterator<Item = Object>,
-        _timestamp_ms: u64,
-    ) -> Result<Vec<Object>, ByteTrackError> {
-        // For now, delegate to update(). Full timestamp support will be added
-        // in the nonuniform_time branch with proper Kalman filter integration.
-        self.update(objects)
     }
 
     pub fn track_buffer_sizes(&self) -> TrackBufferSizes {
@@ -150,11 +135,40 @@ impl ByteTracker {
         }
     }
 
+    /// Update tracker with detections (no timestamp).
+    ///
+    /// Uses default 100ms time delta between frames.
+    /// Prefer `update_with_timestamp` when accurate timestamps are available.
     pub fn update(
         &mut self,
         objects: impl Iterator<Item = Object>,
     ) -> Result<Vec<Object>, ByteTrackError> {
+        // Compute synthetic timestamp based on default dt
+        let timestamp_ms = self.last_timestamp_ms.unwrap_or(0) + (DEFAULT_DT_SECONDS * 1000.0) as u64;
+        self.update_with_timestamp(objects, timestamp_ms)
+    }
+
+    /// Update tracker with detections and timestamp.
+    ///
+    /// This is the recommended API when you have accurate timestamps for each frame.
+    /// The timestamp is used for proper time-based Kalman filter prediction and track management.
+    ///
+    /// # Arguments
+    /// * `objects` - Iterator of detected objects
+    /// * `timestamp_ms` - Timestamp in milliseconds
+    pub fn update_with_timestamp(
+        &mut self,
+        objects: impl Iterator<Item = Object>,
+        timestamp_ms: u64,
+    ) -> Result<Vec<Object>, ByteTrackError> {
         self.frame_id += 1;
+
+        // Compute dt from timestamp difference
+        let dt = match self.last_timestamp_ms {
+            Some(last_ts) => (timestamp_ms.saturating_sub(last_ts)) as f32 / 1000.0,
+            None => DEFAULT_DT_SECONDS,
+        };
+        self.last_timestamp_ms = Some(timestamp_ms);
 
         /* ------------------ Step 1: Get detections ------------------------- */
 
@@ -199,13 +213,13 @@ impl ByteTracker {
 
         // Predict the current location with KF
         for track in active_stracks.iter_mut() {
-            track.predict();
+            track.predict(dt);
         }
         // KF predict step for lost tracks
         let mut original_lost_stracks = Vec::new();
         for track in self.lost_stracks.iter() {
             let mut cloned = track.clone();
-            cloned.predict();
+            cloned.predict(dt);
             original_lost_stracks.push(cloned);
         }
         // Step 3: Combine predicted active and lost tracks
@@ -235,7 +249,7 @@ impl ByteTracker {
                 let mut track = strack_pool[idx].clone();
                 let det = &det_stracks[sol as usize];
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(&det, self.frame_id);
+                    track.update(&det, self.frame_id, timestamp_ms);
                     current_tracked_stracks.push(track.clone());
                     strack_pool[idx] = track; // update the track
                 } else {
@@ -243,6 +257,7 @@ impl ByteTracker {
                         det,
                         self.frame_id,
                         -1, /* default value */
+                        timestamp_ms,
                     );
                     refined_stracks.push(track.clone());
                 }
@@ -290,7 +305,7 @@ impl ByteTracker {
                 let mut track = remain_tracked_stracks[idx].clone();
                 let det = &det_low_stracks[sol as usize];
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(det, self.frame_id);
+                    track.update(det, self.frame_id, timestamp_ms);
                     current_tracked_stracks.push(track.clone());
                     remain_tracked_stracks[idx] = track; // update the track
                 } else {
@@ -298,6 +313,7 @@ impl ByteTracker {
                         det,
                         self.frame_id,
                         -1, /* default value */
+                        timestamp_ms,
                     );
                     refined_stracks.push(track.clone());
                 }
@@ -335,7 +351,7 @@ impl ByteTracker {
             // Matches result in tracks that are officially activated
             for &(idx, sol) in matches_idx.iter() {
                 let mut track = non_active_stracks[idx].clone();
-                track.update(&remain_det_stracks[sol as usize], self.frame_id);
+                track.update(&remain_det_stracks[sol as usize], self.frame_id, timestamp_ms);
                 current_tracked_stracks.push(track.clone());
             }
 
@@ -355,7 +371,7 @@ impl ByteTracker {
                 self.track_id_count += 1;
                 // Activate is a bit of a misnomer here, track is not considered active until there
                 // is a second detection (unless this detection is on the very first frame)
-                track.activate(self.frame_id, self.track_id_count);
+                track.activate(self.frame_id, self.track_id_count, timestamp_ms);
                 current_tracked_stracks.push(track.clone());
             }
         }
@@ -363,7 +379,8 @@ impl ByteTracker {
         // Lost tracks that are past the TTL are marked for removal
         for i in 0..self.lost_stracks.len() {
             let lost_track = &self.lost_stracks[i];
-            if self.frame_id - lost_track.get_frame_id() > self.max_time_lost {
+            let elapsed_ms = timestamp_ms.saturating_sub(lost_track.get_last_seen_timestamp_ms());
+            if elapsed_ms > self.track_buffer_ms {
                 let mut track = lost_track.clone();
                 track.mark_as_removed();
                 current_removed_stracks.push(lost_track.clone());
@@ -410,9 +427,10 @@ impl ByteTracker {
         Ok(output_stracks)
     }
 
-    /// Update tracker with debug info for visualization.
-    /// Returns both the tracked objects and detailed debug information about
-    /// each stage of the tracking algorithm.
+    /// Update tracker with debug info for visualization (no timestamp).
+    ///
+    /// Uses default 100ms time delta between frames.
+    /// Prefer `update_with_debug_timestamp` when accurate timestamps are available.
     // TODO: Merge update() and update_with_debug() by feature-flagging the debug info
     // collection. This would eliminate code duplication while maintaining zero overhead
     // for non-debug builds. Use #[cfg(feature = "debug-info")] for debug-specific code.
@@ -420,7 +438,33 @@ impl ByteTracker {
         &mut self,
         objects: impl Iterator<Item = Object>,
     ) -> Result<(Vec<Object>, FrameDebugInfo), ByteTrackError> {
+        // Compute synthetic timestamp based on default dt
+        let timestamp_ms = self.last_timestamp_ms.unwrap_or(0) + (DEFAULT_DT_SECONDS * 1000.0) as u64;
+        self.update_with_debug_timestamp(objects, timestamp_ms)
+    }
+
+    /// Update tracker with debug info and timestamp.
+    ///
+    /// Returns both the tracked objects and detailed debug information about
+    /// each stage of the tracking algorithm.
+    ///
+    /// # Arguments
+    /// * `objects` - Iterator of detected objects
+    /// * `timestamp_ms` - Timestamp in milliseconds
+    pub fn update_with_debug_timestamp(
+        &mut self,
+        objects: impl Iterator<Item = Object>,
+        timestamp_ms: u64,
+    ) -> Result<(Vec<Object>, FrameDebugInfo), ByteTrackError> {
         self.frame_id += 1;
+
+        // Compute dt from timestamp difference
+        let dt = match self.last_timestamp_ms {
+            Some(last_ts) => (timestamp_ms.saturating_sub(last_ts)) as f32 / 1000.0,
+            None => DEFAULT_DT_SECONDS,
+        };
+        self.last_timestamp_ms = Some(timestamp_ms);
+
         let mut debug_info = FrameDebugInfo {
             frame_id: self.frame_id,
             ..Default::default()
@@ -477,14 +521,14 @@ impl ByteTracker {
 
         // Predict the current location with KF
         for track in active_stracks.iter_mut() {
-            track.predict();
+            track.predict(dt);
         }
 
         // KF predict step for lost tracks
         let mut original_lost_stracks = Vec::new();
         for track in self.lost_stracks.iter() {
             let mut cloned = track.clone();
-            cloned.predict();
+            cloned.predict(dt);
             original_lost_stracks.push(cloned);
         }
 
@@ -572,11 +616,11 @@ impl ByteTracker {
                 let det = &det_stracks[sol as usize];
                 let old_state = track.get_strack_state();
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(&det, self.frame_id);
+                    track.update(&det, self.frame_id, timestamp_ms);
                     current_tracked_stracks.push(track.clone());
                     strack_pool[idx] = track.clone();
                 } else {
-                    track.re_activate(det, self.frame_id, -1);
+                    track.re_activate(det, self.frame_id, -1, timestamp_ms);
                     refined_stracks.push(track.clone());
                 }
                 let new_state = track.get_strack_state();
@@ -643,11 +687,11 @@ impl ByteTracker {
                 let det = &det_low_stracks[sol as usize];
                 let old_state = track.get_strack_state();
                 if track.get_strack_state() == STrackState::Tracked {
-                    track.update(det, self.frame_id);
+                    track.update(det, self.frame_id, timestamp_ms);
                     current_tracked_stracks.push(track.clone());
                     remain_tracked_stracks[idx] = track.clone();
                 } else {
-                    track.re_activate(det, self.frame_id, -1);
+                    track.re_activate(det, self.frame_id, -1, timestamp_ms);
                     refined_stracks.push(track.clone());
                 }
                 let new_state = track.get_strack_state();
@@ -717,7 +761,7 @@ impl ByteTracker {
             for &(idx, sol) in matches_idx.iter() {
                 let mut track = non_active_stracks[idx].clone();
                 let old_state = track.get_strack_state();
-                track.update(&remain_det_stracks[sol as usize], self.frame_id);
+                track.update(&remain_det_stracks[sol as usize], self.frame_id, timestamp_ms);
                 current_tracked_stracks.push(track.clone());
                 let new_state = track.get_strack_state();
                 if old_state != new_state {
@@ -746,7 +790,7 @@ impl ByteTracker {
                     continue;
                 }
                 self.track_id_count += 1;
-                track.activate(self.frame_id, self.track_id_count);
+                track.activate(self.frame_id, self.track_id_count, timestamp_ms);
                 current_tracked_stracks.push(track.clone());
             }
         }
@@ -754,7 +798,8 @@ impl ByteTracker {
         /* ------------------ Step 5: Update state ------------------------- */
         for i in 0..self.lost_stracks.len() {
             let lost_track = &self.lost_stracks[i];
-            if self.frame_id - lost_track.get_frame_id() > self.max_time_lost {
+            let elapsed_ms = timestamp_ms.saturating_sub(lost_track.get_last_seen_timestamp_ms());
+            if elapsed_ms > self.track_buffer_ms {
                 let mut track = lost_track.clone();
                 track.mark_as_removed();
                 current_removed_stracks.push(lost_track.clone());
@@ -800,21 +845,6 @@ impl ByteTracker {
     /// Update tracker with debug info and timestamp.
     ///
     /// This is the recommended API when you need both debug visualization data
-    /// and accurate timestamps for each frame.
-    ///
-    /// # Arguments
-    /// * `objects` - Iterator of detected objects
-    /// * `_timestamp_ms` - Timestamp in milliseconds (reserved for future use)
-    pub fn update_with_debug_timestamp(
-        &mut self,
-        objects: impl Iterator<Item = Object>,
-        _timestamp_ms: u64,
-    ) -> Result<(Vec<Object>, FrameDebugInfo), ByteTrackError> {
-        // For now, delegate to update_with_debug(). Full timestamp support will be added
-        // in the nonuniform_time branch with proper Kalman filter integration.
-        self.update_with_debug(objects)
-    }
-
     pub(crate) fn joint_stracks(
         a_tracks: &Vec<STrack>,
         b_tracks: &Vec<STrack>,

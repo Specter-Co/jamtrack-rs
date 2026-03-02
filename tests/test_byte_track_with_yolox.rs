@@ -14,11 +14,9 @@ const DETECTION_JSON_PATH: &str = "data/jsons/detection_results.json";
  * ---------------------------------------------------------------------------- */
 
 /// Creates a ByteTracker with default parameters.
-/// Note: num ticks to persist a lost track = track_buffer (seconds) * frame_rate
 fn default_byte_tracker() -> ByteTracker {
     ByteTracker::new(
-        30,        // frame_rate
-        1.0,       // track_buffer (seconds): max_time_lost = 1.0 * 30 = 30 frames
+        1.0,       // track_buffer (seconds)
         0.5,       // track_thresh: boundary for low vs high conf detection
         0.7,       // high_thresh: min det conf to spawn a new candidate track
         false,     // use_ciou: use CIoU instead of IoU for matching

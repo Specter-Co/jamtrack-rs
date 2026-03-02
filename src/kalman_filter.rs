@@ -29,7 +29,6 @@ pub(crate) struct KalmanFilter {
     std_aspect_ratio_mot: f32,
     std_d_aspect_ratio_mot: f32,
     std_aspect_ratio_meas: f32,
-    motion_mat: SMatrix<f32, 8, 8>, // 8x8
     update_mat: SMatrix<f32, 4, 8>, // 4x8
 }
 
@@ -46,26 +45,14 @@ impl KalmanFilter {
         std_d_aspect_ratio_mot: f32,
         std_aspect_ratio_meas: f32,
     ) -> Self {
-        let ndim = 4;
-        let dt = 1.0;
-
-        let mut motion_mat = SMatrix::<f32, 8, 8>::identity();
-
-        // 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        // 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        // 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        // 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+        // Observation matrix: extracts [cx, cy, a, h] from state
         let mut update_mat = SMatrix::<f32, 4, 8>::zeros();
         update_mat[(0, 0)] = 1.0;
         update_mat[(1, 1)] = 1.0;
         update_mat[(2, 2)] = 1.0;
         update_mat[(3, 3)] = 1.0;
 
-        for i in 0..ndim {
-            motion_mat[(i, i + ndim)] = dt;
-        }
-
-        return Self {
+        Self {
             std_weight_position,
             std_weight_velocity,
             std_weight_position_meas,
@@ -76,9 +63,18 @@ impl KalmanFilter {
             std_aspect_ratio_mot,
             std_d_aspect_ratio_mot,
             std_aspect_ratio_meas,
-            motion_mat,
             update_mat,
-        };
+        }
+    }
+
+    /// Build motion matrix F for given dt
+    fn motion_matrix(dt: f32) -> SMatrix<f32, 8, 8> {
+        let mut f = SMatrix::<f32, 8, 8>::identity();
+        // Position += velocity * dt
+        for i in 0..4 {
+            f[(i, i + 4)] = dt;
+        }
+        f
     }
 
     pub(crate) fn initiate(
@@ -108,27 +104,61 @@ impl KalmanFilter {
         *covariance = SMatrix::<f32, 8, 8>::from_diagonal(&tmp.transpose());
     }
 
+    /// Predict state forward by dt seconds using continuous-discrete Kalman filter.
+    ///
+    /// The process noise Q is integrated properly for variable dt:
+    /// - Position variance: dt³/3 * q_vel + dt * q_pos
+    /// - Velocity variance: dt * q_vel
+    /// - Position-velocity covariance: dt²/2 * q_vel
     pub(crate) fn predict(
         &mut self,
         mean: &mut StateMean,
         covariance: &mut StateCov,
+        dt: f32,
     ) {
-        let mut std = SMatrix::<f32, 1, 8>::zeros();
-        std[0] = self.std_weight_position_mot * mean[(0, 3)];
-        std[1] = self.std_weight_position_mot * mean[(0, 3)];
-        std[2] = self.std_aspect_ratio_mot;
-        std[3] = self.std_weight_position_mot * mean[(0, 3)];
-        std[4] = self.std_weight_velocity_mot * mean[(0, 3)];
-        std[5] = self.std_weight_velocity_mot * mean[(0, 3)];
-        std[6] = self.std_d_aspect_ratio_mot;
-        std[7] = self.std_weight_velocity_mot * mean[(0, 3)];
+        let motion_mat = Self::motion_matrix(dt);
+        let h = mean[(0, 3)]; // height for scaling
 
-        let tmp = std.component_mul(&std);
-        let motion_cov = SMatrix::<f32, 8, 8>::from_diagonal(&tmp.transpose());
-        *mean = (&self.motion_mat * mean.transpose()).transpose();
+        // Process noise variances (continuous-time power spectral densities)
+        let q_pos = (self.std_weight_position_mot * h).powi(2);
+        let q_vel = (self.std_weight_velocity_mot * h).powi(2);
+        let q_a = self.std_aspect_ratio_mot.powi(2);
+        let q_va = self.std_d_aspect_ratio_mot.powi(2);
 
-        let tmp = self.motion_mat * *covariance * self.motion_mat.transpose();
-        *covariance = tmp + motion_cov;
+        let dt2 = dt * dt;
+        let dt3 = dt2 * dt;
+
+        // Build Q matrix with proper continuous-discrete integration
+        // State: [cx, cy, a, h, vcx, vcy, va, vh]
+        let mut q = SMatrix::<f32, 8, 8>::zeros();
+
+        // cx-vcx pair (indices 0, 4)
+        q[(0, 0)] = dt3 / 3.0 * q_vel + dt * q_pos;
+        q[(0, 4)] = dt2 / 2.0 * q_vel;
+        q[(4, 0)] = dt2 / 2.0 * q_vel;
+        q[(4, 4)] = dt * q_vel;
+
+        // cy-vcy pair (indices 1, 5)
+        q[(1, 1)] = dt3 / 3.0 * q_vel + dt * q_pos;
+        q[(1, 5)] = dt2 / 2.0 * q_vel;
+        q[(5, 1)] = dt2 / 2.0 * q_vel;
+        q[(5, 5)] = dt * q_vel;
+
+        // a-va pair (indices 2, 6) - aspect ratio
+        q[(2, 2)] = dt3 / 3.0 * q_va + dt * q_a;
+        q[(2, 6)] = dt2 / 2.0 * q_va;
+        q[(6, 2)] = dt2 / 2.0 * q_va;
+        q[(6, 6)] = dt * q_va;
+
+        // h-vh pair (indices 3, 7)
+        q[(3, 3)] = dt3 / 3.0 * q_vel + dt * q_pos;
+        q[(3, 7)] = dt2 / 2.0 * q_vel;
+        q[(7, 3)] = dt2 / 2.0 * q_vel;
+        q[(7, 7)] = dt * q_vel;
+
+        // Predict: x' = F*x, P' = F*P*F' + Q
+        *mean = (&motion_mat * mean.transpose()).transpose();
+        *covariance = motion_mat * *covariance * motion_mat.transpose() + q;
     }
 
     pub(crate) fn update(

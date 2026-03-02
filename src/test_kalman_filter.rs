@@ -44,35 +44,47 @@ fn test_predict() {
     ]);
     #[rustfmt::skip]
     let mut covariance = SMatrix::<f32, 8, 8>::from_iterator([
-        0.2, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0,      0.0, 
-        0.0, 0.2, 0.0,  0.0, 0.0, 0.0, 0.0,      0.0, 
-        0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0,      0.0, 
-        0.0, 0.0, 0.0,  0.2, 0.0, 0.0, 0.0,      0.0, 
-        0.0, 0.0, 0.0,  0.0, 4.0, 0.0, 0.0,      0.0, 
-        0.0, 0.0, 0.0,  0.0, 0.0, 4.0, 0.0,      0.0, 
-        0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.000001, 0.0, 
+        0.2, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0,      0.0,
+        0.0, 0.2, 0.0,  0.0, 0.0, 0.0, 0.0,      0.0,
+        0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.0,      0.0,
+        0.0, 0.0, 0.0,  0.2, 0.0, 0.0, 0.0,      0.0,
+        0.0, 0.0, 0.0,  0.0, 4.0, 0.0, 0.0,      0.0,
+        0.0, 0.0, 0.0,  0.0, 0.0, 4.0, 0.0,      0.0,
+        0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.000001, 0.0,
         0.0, 0.0, 0.0,  0.0, 0.0, 0.0, 0.0,      4.0,
     ]);
 
-    kalman_filter.predict(&mut mean, &mut covariance);
+    kalman_filter.predict(&mut mean, &mut covariance, 0.1);
 
-    // Assert the values of mean and covariance after prediction
+    // Assert the values of mean after prediction (with dt=0.1)
+    // mean' = F * mean where F has dt=0.1 in off-diagonal: pos += vel * 0.1
     assert_eq!(
         mean,
         SMatrix::<f32, 1, 8>::from_iterator([
-            6.0, 8.0, 10.0, 12.0, 5.0, 6.0, 7.0, 8.0
+            1.5, 2.6, 3.7, 4.8, 5.0, 6.0, 7.0, 8.0
         ])
     );
+
+    // Expected covariance with continuous-discrete Q matrix (dt=0.1, h=4)
+    // P' = F*P*F' + Q where Q has position-velocity cross-covariance terms
+    // q_pos = (1/20 * 4)^2 = 0.04, q_vel = (1/160 * 4)^2 = 0.000625
+    // Q[i,i] (pos) = dt^3/3 * q_vel + dt * q_pos ≈ 0.004
+    // Q[i,j] (pos-vel) = dt^2/2 * q_vel ≈ 3.125e-6
+    // Q[j,j] (vel) = dt * q_vel ≈ 6.25e-5
+    // F*P*F'[0,0] = P[0,0] + 2*dt*P[0,4] + dt^2*P[4,4] = 0.2 + 0 + 0.04 = 0.24
+    // F*P*F'[0,4] = P[0,4] + dt*P[4,4] = 0 + 0.4 = 0.4
     #[rustfmt::skip]
     let expected = SMatrix::<f32, 8, 8>::from_iterator([
-        4.24, 0.0,  0.0,     0.0,  4.0,      0.0,      0.0,   0.0,
-        0.0,  4.24, 0.0,     0.0,  0.0,      4.0,      0.0,   0.0,
-        0.0,  0.0,  1.01e-2, 0.0,  0.0,      0.0,      1.0e-6, 0.0,
-        0.0,  0.0,  0.0,     4.24, 0.0,      0.0,      0.0,    4.0,
-        4.0,  0.0,  0.0,     0.0,  4.000625, 0.0,      0.0,    0.0,
-        0.0,  4.0,  0.0,     0.0,  0.0,      4.000625, 0.0,    0.0,
-        0.0,  0.0,  1.0e-6,  0.0,  0.0,      0.0,      1.0e-6, 0.0,
-        0.0,  0.0,  0.0,     4.0,  0.0,      0.0,      0.0,    4.000625,
+        // P' = F*P*F' + Q for each position-velocity pair
+        // cx row: [0.24 + 0.004, 0, 0, 0, 0.4 + 3.125e-6, 0, 0, 0]
+        0.244,       0.0,         0.0,         0.0,         0.400003125, 0.0,         0.0,          0.0,
+        0.0,         0.244,       0.0,         0.0,         0.0,         0.400003125, 0.0,          0.0,
+        0.0,         0.0,         1.01e-2,     0.0,         0.0,         0.0,         1.0e-6,       0.0,
+        0.0,         0.0,         0.0,         0.244,       0.0,         0.0,         0.0,          0.400003125,
+        0.400003125, 0.0,         0.0,         0.0,         4.0000625,   0.0,         0.0,          0.0,
+        0.0,         0.400003125, 0.0,         0.0,         0.0,         4.0000625,   0.0,          0.0,
+        0.0,         0.0,         1.0e-6,      0.0,         0.0,         0.0,         1.0e-6,       0.0,
+        0.0,         0.0,         0.0,         0.400003125, 0.0,         0.0,         0.0,          4.0000625,
     ]);
     for (i, &v) in covariance.iter().enumerate() {
         assert_nearly_eq!(v, expected.iter().nth(i).unwrap(), 1e-4)
@@ -167,20 +179,24 @@ fn test_update() {
 #[test]
 fn test_complex_predict() {
     let mut kalman_filter = KalmanFilter::new(1.0 / 20., 1.0 / 160., 1.0 / 20., 1.0 / 20., 1.0 / 160., 1e-2, 1e-5, 1e-2, 1e-5, 1e-1);
+    // With constant measurement updates, mean should converge to measurement position with zero velocity
     let expected_mean = SMatrix::<f32, 1, 8>::from_iterator([
         1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0,
     ]);
+    // Expected covariance after 10 update-predict cycles with dt=0.1
+    // Computed with continuous-discrete Q matrix integration
     #[rustfmt::skip]
     let expected_covariance = SMatrix::<f32, 8, 8>::from_iterator([
-        8.4031250e+00, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 7.2187500e-01, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00,
-        0.0000000e+00, 8.4031250e+00, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 7.2187500e-01, 0.0000000e+00, 0.0000000e+00,
-        0.0000000e+00, 0.0000000e+00, 1.2000506e-03, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 6.6000000e-09, 0.0000000e+00,
-        0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 8.4031250e+00, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 7.2187500e-01,
-        7.2187500e-01, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 6.9375000e-02, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00,
-        0.0000000e+00, 7.2187500e-01, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 6.9375000e-02, 0.0000000e+00, 0.0000000e+00,
-        0.0000000e+00, 0.0000000e+00, 6.6000000e-09, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 1.2000000e-09, 0.0000000e+00,
-        0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 7.2187500e-01, 0.0000000e+00, 0.0000000e+00, 0.0000000e+00, 6.9375000e-02,
-        ]);
+        2.6337482e-2, 0.0,          0.0,          0.0,          1.6851421e-2, 0.0,          0.0,          0.0,
+        0.0,          2.6337482e-2, 0.0,          0.0,          0.0,          1.6851421e-2, 0.0,          0.0,
+        0.0,          0.0,          1.9065372e-4, 0.0,          0.0,          0.0,          1.6179691e-10, 0.0,
+        0.0,          0.0,          0.0,          2.6337482e-2, 0.0,          0.0,          0.0,          1.6851421e-2,
+        1.6851421e-2, 0.0,          0.0,          0.0,          3.801089e-2,  0.0,          0.0,          0.0,
+        0.0,          1.6851421e-2, 0.0,          0.0,          0.0,          3.801089e-2,  0.0,          0.0,
+        0.0,          0.0,          1.6179691e-10, 0.0,          0.0,          0.0,          2.1e-10,      0.0,
+        0.0,          0.0,          0.0,          1.6851421e-2, 0.0,          0.0,          0.0,          3.801089e-2,
+    ]);
+
     let mut mean = SMatrix::<f32, 1, 8>::zeros();
     let mut covariance = SMatrix::<f32, 8, 8>::zeros();
     let measurement = SMatrix::<f32, 1, 4>::from_iterator([1.0, 2.0, 3.0, 4.0]);
@@ -188,12 +204,16 @@ fn test_complex_predict() {
 
     for _ in 0..10 {
         kalman_filter.update(&mut mean, &mut covariance, &measurement);
-        kalman_filter.predict(&mut mean, &mut covariance);
+        kalman_filter.predict(&mut mean, &mut covariance, 0.1);
     }
-    kalman_filter.predict(&mut mean, &mut covariance);
+    kalman_filter.predict(&mut mean, &mut covariance, 0.1);
 
     assert_eq!(mean, expected_mean);
-    for (i, &v) in expected_covariance.iter().enumerate() {
-        assert_nearly_eq!(v, expected_covariance.iter().nth(i).unwrap(), 1e-4)
+    for (i, (&actual, &expected)) in covariance.iter().zip(expected_covariance.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-4,
+            "covariance mismatch at index {}: actual={:e}, expected={:e}",
+            i, actual, expected
+        );
     }
 }

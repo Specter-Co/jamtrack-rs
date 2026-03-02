@@ -43,6 +43,7 @@ pub(crate) struct STrack {
     detection_id_last: i64,
     start_frame_id: usize,
     tracklet_len: usize,
+    last_seen_timestamp_ms: u64,
 }
 
 impl STrack {
@@ -88,6 +89,7 @@ impl STrack {
             detection_id_last: detection_id,
             start_frame_id: 0,
             tracklet_len: 0,
+            last_seen_timestamp_ms: 0,
         }
     }
 
@@ -110,6 +112,7 @@ impl STrack {
             detection_id_last: 0,
             start_frame_id: 0,
             tracklet_len: 0,
+            last_seen_timestamp_ms: 0,
         }
     }
 
@@ -154,6 +157,11 @@ impl STrack {
     }
 
     #[inline(always)]
+    pub(crate) fn get_last_seen_timestamp_ms(&self) -> u64 {
+        return self.last_seen_timestamp_ms;
+    }
+
+    #[inline(always)]
     pub(crate) fn get_vel_x(&self) -> f32 {
         return self.mean[4];
     }
@@ -175,7 +183,7 @@ impl STrack {
         ]
     }
 
-    pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize) {
+    pub(crate) fn activate(&mut self, frame_id: usize, track_id: usize, timestamp_ms: u64) {
         self.kalman_filter.initiate(
             &mut self.mean,
             &mut self.covariance,
@@ -192,6 +200,7 @@ impl STrack {
         self.frame_id = frame_id;
         self.start_frame_id = frame_id;
         self.tracklet_len = 0;
+        self.last_seen_timestamp_ms = timestamp_ms;
     }
 
     pub(crate) fn re_activate(
@@ -199,6 +208,7 @@ impl STrack {
         new_track: &STrack,
         frame_id: usize,
         new_track_id: isize,
+        timestamp_ms: u64,
     ) {
         self.kalman_filter.update(
             &mut self.mean,
@@ -218,18 +228,19 @@ impl STrack {
         self.detection_id_last = new_track.detection_id_last;
         self.frame_id = frame_id;
         self.tracklet_len = 0;
+        self.last_seen_timestamp_ms = timestamp_ms;
     }
 
-    pub(crate) fn predict(&mut self) {
+    pub(crate) fn predict(&mut self, dt: f32) {
         if self.state != STrackState::Tracked {
             self.mean[(0, 7)] = 0.;
         }
         self.kalman_filter
-            .predict(&mut self.mean, &mut self.covariance);
+            .predict(&mut self.mean, &mut self.covariance, dt);
         self.update_rect();
     }
 
-    pub(crate) fn update(&mut self, new_track: &STrack, frame_id: usize) {
+    pub(crate) fn update(&mut self, new_track: &STrack, frame_id: usize, timestamp_ms: u64) {
         self.kalman_filter.update(
             &mut self.mean,
             &mut self.covariance,
@@ -244,6 +255,7 @@ impl STrack {
         self.frame_id = frame_id;
         self.detection_id_last = new_track.get_detection_id_last();
         self.tracklet_len += 1;
+        self.last_seen_timestamp_ms = timestamp_ms;
     }
 
     pub(crate) fn mark_as_lost(&mut self) {

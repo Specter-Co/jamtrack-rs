@@ -83,7 +83,6 @@ impl Default for OverlaySettings {
 #[derive(Clone, PartialEq)]
 pub struct TrackerParams {
     // Core params
-    pub frame_rate: usize,
     pub track_buffer_secs: f32,
     pub track_thresh: f32,
     pub high_thresh: f32,
@@ -114,7 +113,6 @@ pub struct TrackerParams {
 impl Default for TrackerParams {
     fn default() -> Self {
         Self {
-            frame_rate: 30,
             track_buffer_secs: 1.0,
             track_thresh: 0.25,
             high_thresh: 0.5,
@@ -317,7 +315,6 @@ impl VisualizerApp {
 
         // Create ByteTracker with current parameters
         let mut tracker = ByteTracker::new(
-            params.frame_rate,
             params.track_buffer_secs,
             params.track_thresh,
             params.high_thresh,
@@ -348,8 +345,9 @@ impl VisualizerApp {
             let detections = clip.get_detections(frame_idx);
 
             // Get timestamp in milliseconds for this frame (u64 to avoid precision loss)
+            // Fallback uses 100ms intervals (default dt) when timestamp unavailable
             let timestamp_ms: u64 = clip.get_timestamp(frame_idx)
-                .unwrap_or((display_idx as u64 * 1000) / params.frame_rate as u64);
+                .unwrap_or(display_idx as u64 * 100);
 
             // Convert detections to Object format, filtering by enabled classes
             // Use pixel coordinates (ByteTrack expects pixel coords)

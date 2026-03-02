@@ -114,7 +114,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create tracker
     let mut tracker = ByteTracker::new(
-        30,                          // frame_rate (nominal, timestamps provide actual timing)
         track_buffer_secs,
         track_thresh,
         high_thresh,

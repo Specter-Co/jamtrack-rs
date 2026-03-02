@@ -7,10 +7,8 @@ use jamtrack_rs::rect::Rect;
  * ---------------------------------------------------------------------------- */
 
 /// Creates a ByteTracker with default parameters.
-/// max_time_lost = track_buffer * frame_rate = 1.0 * 30 = 30
 fn default_byte_tracker() -> ByteTracker {
     ByteTracker::new(
-        30,        // frame_rate
         1.0,       // track_buffer (seconds)
         0.5,       // track_thresh
         0.7,       // high_thresh
@@ -35,11 +33,10 @@ fn default_byte_tracker() -> ByteTracker {
 }
 
 /// Creates a ByteTracker with a short TTL for testing lost/removed transitions.
-/// max_time_lost = track_buffer * frame_rate = 0.167 * 30 ≈ 5
+/// With 100ms default dt, 0.5 second TTL means ~5 frames before removal.
 fn short_ttl_byte_tracker() -> ByteTracker {
     ByteTracker::new(
-        30,        // frame_rate
-        5.0 / 30.0, // track_buffer (seconds, short TTL → max_time_lost ≈ 5)
+        0.5,       // track_buffer (seconds, short TTL)
         0.5,       // track_thresh
         0.7,       // high_thresh
         false,     // use_ciou
