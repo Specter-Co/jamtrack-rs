@@ -3,7 +3,7 @@ mod ui;
 mod video;
 
 use jamtrack_rs::dataset::Clip;
-use jamtrack_rs::evaluation::{Evaluator, EvalMetrics, GtDetection, PredDetection, FrameEvalResult};
+use jamtrack_rs::evaluation::{Evaluator, FrameAssociation, AssociationResult};
 use eframe::egui;
 use jamtrack_rs::byte_tracker::ByteTracker;
 use jamtrack_rs::debug_info::FrameDebugInfo;
@@ -13,14 +13,45 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use video::{DecoderHandle, VideoMeta};
 
-fn main() -> eframe::Result<()> {
-    // Parse command line arguments
+/// Command line arguments for the visualizer
+struct CliArgs {
+    /// Path to video file
+    video_path: Option<PathBuf>,
+    /// Path to detections JSON file (with optional GT labels)
+    detections_path: Option<PathBuf>,
+    /// Path to timestamps JSON file
+    timestamps_path: Option<PathBuf>,
+}
+
+fn parse_args() -> CliArgs {
     let args: Vec<String> = std::env::args().collect();
-    let clip_dir = args.get(1).map(PathBuf::from);
+
+    if args.len() >= 4 {
+        // Full format: <video> <detections.json> <timestamps.json>
+        CliArgs {
+            video_path: Some(PathBuf::from(&args[1])),
+            detections_path: Some(PathBuf::from(&args[2])),
+            timestamps_path: Some(PathBuf::from(&args[3])),
+        }
+    } else if args.len() == 1 {
+        CliArgs {
+            video_path: None,
+            detections_path: None,
+            timestamps_path: None,
+        }
+    } else {
+        eprintln!("Usage: visualizer <video.mp4> <detections.json> <timestamps.json>");
+        std::process::exit(1);
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    let cli = parse_args();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1400.0, 900.0])
+            .with_resizable(true)
             .with_title("ByteTrack Visualizer"),
         ..Default::default()
     };
@@ -28,7 +59,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "ByteTrack Visualizer",
         options,
-        Box::new(|cc| Ok(Box::new(VisualizerApp::new(cc, clip_dir)))),
+        Box::new(|cc| Ok(Box::new(VisualizerApp::new(cc, cli)))),
     )
 }
 
@@ -49,9 +80,6 @@ pub struct OverlaySettings {
     pub show_bytetrack_mechanics: bool,
     // Evaluation overlays (only when ground truth is available)
     pub show_eval_overlays: bool,
-    pub show_id_switches: bool,
-    pub show_false_positives: bool,
-    pub show_false_negatives: bool,
     pub show_gt_boxes: bool,
 }
 
@@ -71,9 +99,6 @@ impl Default for OverlaySettings {
             show_bytetrack_mechanics: false,
             // Evaluation overlays
             show_eval_overlays: false,
-            show_id_switches: true,
-            show_false_positives: true,
-            show_false_negatives: true,
             show_gt_boxes: true,
         }
     }
@@ -170,6 +195,7 @@ pub struct VisualizerApp {
     track_results: Option<TrackResults>,
     last_tracker_params: TrackerParams,
     last_enabled_classes: std::collections::HashSet<String>,
+    last_detection_min_confidence: f32,
 
     // Playback state
     current_frame: usize,
@@ -201,14 +227,22 @@ pub struct VisualizerApp {
     debug_track_id: Option<usize>,
 
     // Evaluation state (when ground truth is available)
-    evaluator: Option<Evaluator>,
-    eval_metrics: Option<EvalMetrics>,
+    association_result: Option<AssociationResult>,
+    // Per-frame evaluation data: frame_idx -> Vec<(tracker_id, gt_track_id, is_correct_match)>
+    frame_eval_data: HashMap<usize, Vec<(u64, Option<u64>, bool)>>,
     // Ground truth bboxes keyed by display frame index
     gt_by_display_frame: HashMap<usize, Vec<(u64, (f32, f32, f32, f32))>>,
+    // GT time series: gt_id -> Vec<(display_frame_idx, Option<pred_id>)> sorted by frame
+    gt_timeseries: HashMap<u64, Vec<(usize, Option<u64>)>>,
+
+    // Pending file uploads (for separate Video/Detections/Timestamps buttons)
+    pending_video: Option<PathBuf>,
+    pending_detections: Option<PathBuf>,
+    pending_timestamps: Option<PathBuf>,
 }
 
 impl VisualizerApp {
-    fn new(_cc: &eframe::CreationContext<'_>, clip_dir: Option<PathBuf>) -> Self {
+    fn new(_cc: &eframe::CreationContext<'_>, cli: CliArgs) -> Self {
         let tracker_params = TrackerParams::default();
         let mut app = Self {
             clip: None,
@@ -217,6 +251,7 @@ impl VisualizerApp {
             track_results: None,
             last_tracker_params: tracker_params.clone(),
             last_enabled_classes: std::collections::HashSet::new(),
+            last_detection_min_confidence: 0.1,  // Default matches OverlaySettings default
             current_frame: 0,
             is_playing: false,
             playback_fps: 5.0,
@@ -232,19 +267,25 @@ impl VisualizerApp {
             sampled_frames: Vec::new(),
             debug_track_id_input: String::new(),
             debug_track_id: None,
-            evaluator: None,
-            eval_metrics: None,
+            association_result: None,
+            frame_eval_data: HashMap::new(),
             gt_by_display_frame: HashMap::new(),
+            gt_timeseries: HashMap::new(),
+            pending_video: None,
+            pending_detections: None,
+            pending_timestamps: None,
         };
 
-        if let Some(dir) = clip_dir {
-            app.load_clip(&dir);
+        // Load from command line arguments
+        if let (Some(video), Some(det_path), Some(ts_path)) = (cli.video_path, cli.detections_path, cli.timestamps_path) {
+            app.load_with_video(&video, &det_path, &ts_path);
         }
 
         app
     }
 
-    fn load_clip(&mut self, dir: &std::path::Path) {
+    /// Load a dataset with explicit video path
+    pub fn load_with_video(&mut self, video_path: &std::path::Path, json_path: &std::path::Path, timestamps_path: &std::path::Path) {
         // Reset state
         self.clip = None;
         self.decoder = None;
@@ -253,18 +294,26 @@ impl VisualizerApp {
         self.current_frame = 0;
         self.video_texture = None;
         self.sampled_frames = Vec::new();
-        self.evaluator = None;
-        self.eval_metrics = None;
+        self.association_result = None;
+        self.frame_eval_data = HashMap::new();
         self.gt_by_display_frame = HashMap::new();
+        self.gt_timeseries = HashMap::new();
 
-        // Load clip metadata
-        match Clip::load(dir) {
+        match Clip::load_human_labeled(json_path, timestamps_path) {
             Ok(mut clip) => {
-                // Open video decoder
-                let video_path = clip.video_path.to_string_lossy().to_string();
-                eprintln!("Opening video: {}", video_path);
+                // Resolve duplicate GT IDs (same GT ID appearing multiple times in a frame)
+                // Keeps only the longest track, nullifies the rest
+                let (num_dups, num_nullified) = clip.resolve_duplicate_gt_ids();
+                if num_dups > 0 {
+                    eprintln!("Resolved {} duplicate GT IDs ({} detections nullified)", num_dups, num_nullified);
+                }
 
-                match VideoMeta::open(&video_path, 960, 540) {
+                // Override video path from command line
+                clip.video_path = video_path.to_path_buf();
+                let video_path_str = video_path.to_string_lossy().to_string();
+                eprintln!("Opening video: {}", video_path_str);
+
+                match VideoMeta::open(&video_path_str, 960, 540) {
                     Some(meta) => {
                         clip.set_video_dimensions(meta.src_width, meta.src_height);
                         self.video_width = meta.out_width;
@@ -274,9 +323,11 @@ impl VisualizerApp {
                         self.decoder = Some(decoder);
                         self.clip = Some(clip);
 
-                        eprintln!("Loaded clip with {} frames", self.clip.as_ref().unwrap().frame_count);
+                        eprintln!("Loaded clip with {} frames (has_ground_truth={})",
+                            self.clip.as_ref().unwrap().frame_count,
+                            self.clip.as_ref().unwrap().has_ground_truth);
 
-                        // Collect unique classes from detections
+                        // Collect unique classes
                         let mut classes: std::collections::HashSet<String> = std::collections::HashSet::new();
                         for frame_idx in 0..self.clip.as_ref().unwrap().frame_count {
                             for det in self.clip.as_ref().unwrap().get_detections(frame_idx) {
@@ -285,14 +336,14 @@ impl VisualizerApp {
                         }
                         let mut class_list: Vec<String> = classes.iter().cloned().collect();
                         class_list.sort();
-                        self.overlay_settings.all_classes = class_list.clone();
-                        self.overlay_settings.enabled_classes = classes; // Enable all by default
+                        self.overlay_settings.all_classes = class_list;
+                        self.overlay_settings.enabled_classes = classes;
 
-                        // Run ByteTrack on detections
+                        // Run tracker
                         self.run_tracker();
                     }
                     None => {
-                        self.load_error = Some(format!("Failed to open video: {}", video_path));
+                        self.load_error = Some(format!("Failed to open video: {}", video_path_str));
                     }
                 }
             }
@@ -402,6 +453,7 @@ impl VisualizerApp {
         });
         self.last_tracker_params = self.tracker_params.clone();
         self.last_enabled_classes = self.overlay_settings.enabled_classes.clone();
+        self.last_detection_min_confidence = self.overlay_settings.detection_min_confidence;
 
         // Run evaluation if ground truth is available
         self.run_evaluation(&results_by_frame, &sampled_indices);
@@ -428,71 +480,177 @@ impl VisualizerApp {
         let clip = match &self.clip {
             Some(c) if c.has_ground_truth => c,
             _ => {
-                self.evaluator = None;
-                self.eval_metrics = None;
+                self.association_result = None;
+                self.frame_eval_data = HashMap::new();
                 self.gt_by_display_frame = HashMap::new();
+                self.gt_timeseries = HashMap::new();
                 return;
             }
         };
 
-        let mut evaluator = Evaluator::new(0.5);  // IoU threshold for matching
+        let mut evaluator = Evaluator::new();
         let mut gt_by_display_frame: HashMap<usize, Vec<(u64, (f32, f32, f32, f32))>> = HashMap::new();
+        // Temporary storage for per-frame associations before we have the final assignment
+        let mut frame_associations: HashMap<usize, Vec<(u64, Option<u64>)>> = HashMap::new();
 
-        // Collect ground truth and predictions
+        // Track deduplication stats
+        let mut total_duplicates_removed = 0usize;
+
+        // Collect ground truth bboxes and match tracker outputs to detections
         for (display_idx, &frame_idx) in sampled_indices.iter().enumerate() {
             let detections = clip.get_detections(frame_idx);
+            let tracks = results_by_frame.get(&display_idx);
 
-            // Ground truth: detections with gt_track_id
-            let mut gt_dets = Vec::new();
-            let mut gt_bboxes = Vec::new();
-            for det in detections {
+            // Deduplicate: group detections by gt_track_id, keep best IoU match with tracker
+            // For each gt_id, find the detection that best matches a tracker output
+            let mut gt_id_to_best_det: HashMap<u64, (usize, f32, (f32, f32, f32, f32))> = HashMap::new();
+            // Maps gt_id -> (det_index, best_iou_with_any_tracker, pixel_rect)
+
+            for (det_idx, det) in detections.iter().enumerate() {
                 if let Some(gt_id) = det.gt_track_id {
                     let (x, y, w, h) = det.to_pixel_rect(clip.video_width, clip.video_height);
-                    gt_dets.push(GtDetection {
-                        frame_idx: display_idx,
-                        track_id: gt_id,
-                        bbox: (x, y, w, h),
-                    });
-                    gt_bboxes.push((gt_id, (x, y, w, h)));
+                    let det_rect = Rect::new(x, y, w, h);
+
+                    // Find best IoU with any tracker output
+                    let best_iou = tracks.map(|ts| {
+                        ts.iter()
+                            .map(|t| t.rect.calc_iou(&det_rect))
+                            .fold(0.0f32, f32::max)
+                    }).unwrap_or(0.0);
+
+                    // Keep this detection if it has better IoU than existing one for this gt_id
+                    let dominated = gt_id_to_best_det.get(&gt_id)
+                        .map(|(_, prev_iou, _)| *prev_iou >= best_iou)
+                        .unwrap_or(false);
+
+                    if !dominated {
+                        if gt_id_to_best_det.contains_key(&gt_id) {
+                            total_duplicates_removed += 1;
+                        }
+                        gt_id_to_best_det.insert(gt_id, (det_idx, best_iou, (x, y, w, h)));
+                    } else {
+                        total_duplicates_removed += 1;
+                    }
                 }
             }
-            gt_by_display_frame.insert(display_idx, gt_bboxes);
-            evaluator.add_ground_truth(gt_dets);
 
-            // Predictions: tracked objects
-            if let Some(tracks) = results_by_frame.get(&display_idx) {
-                let pred_dets: Vec<PredDetection> = tracks.iter().map(|t| {
-                    PredDetection {
-                        frame_idx: display_idx,
-                        track_id: t.track_id as u64,
-                        bbox: (t.rect.x(), t.rect.y(), t.rect.width(), t.rect.height()),
+            // Collect deduplicated GT bboxes for visualization
+            let gt_bboxes: Vec<(u64, (f32, f32, f32, f32))> = gt_id_to_best_det
+                .iter()
+                .map(|(&gt_id, &(_, _, rect))| (gt_id, rect))
+                .collect();
+            gt_by_display_frame.insert(display_idx, gt_bboxes);
+
+            // Build set of valid detection indices (after deduplication)
+            let valid_det_indices: std::collections::HashSet<usize> = gt_id_to_best_det
+                .values()
+                .map(|(idx, _, _)| *idx)
+                .collect();
+
+            // Match each tracker output to input detections by IoU (only considering deduplicated dets)
+            let mut frame_assocs = Vec::new();
+            if let Some(track_list) = tracks {
+                for track in track_list {
+                    let tracker_rect = &track.rect;
+                    let tracker_id = track.track_id as u64;
+
+                    // Find best matching detection by IoU (only from valid deduplicated set)
+                    let mut best_iou = 0.0f32;
+                    let mut best_gt_id: Option<u64> = None;
+
+                    for (det_idx, det) in detections.iter().enumerate() {
+                        // Skip detections that were deduplicated away
+                        if det.gt_track_id.is_some() && !valid_det_indices.contains(&det_idx) {
+                            continue;
+                        }
+
+                        let (dx, dy, dw, dh) = det.to_pixel_rect(clip.video_width, clip.video_height);
+                        let det_rect = Rect::new(dx, dy, dw, dh);
+                        let iou = tracker_rect.calc_iou(&det_rect);
+
+                        if iou > best_iou {
+                            best_iou = iou;
+                            best_gt_id = det.gt_track_id;
+                        }
                     }
-                }).collect();
-                evaluator.add_predictions(pred_dets);
+
+                    // Only add association if we found a matching detection
+                    if best_iou > 0.3 {
+                        evaluator.add_association(FrameAssociation {
+                            frame_idx: display_idx,
+                            tracker_id,
+                            gt_track_id: best_gt_id,
+                        });
+                        frame_assocs.push((tracker_id, best_gt_id));
+                    }
+                }
+            }
+            frame_associations.insert(display_idx, frame_assocs);
+        }
+
+        if total_duplicates_removed > 0 {
+            eprintln!("Deduplication: removed {} duplicate GT annotations (same GT ID in same frame)",
+                total_duplicates_removed);
+        }
+
+        // Compute Association Score metrics
+        let result = evaluator.compute_association_score();
+        let metrics = &result.metrics;
+
+        eprintln!("Evaluation complete:");
+        eprintln!("  Coverage: {:.2}%", metrics.coverage() * 100.0);
+        eprintln!("  Fragmentation: {:.2}", metrics.fragmentation);
+        eprintln!("  Confusion: {:.2}", metrics.confusion);
+        eprintln!("  Tracked No Object: {}", metrics.tracked_no_object);
+
+        // Build per-frame evaluation data with is_correct_match flag
+        let mut frame_eval_data: HashMap<usize, Vec<(u64, Option<u64>, bool)>> = HashMap::new();
+        for (display_idx, assocs) in frame_associations {
+            let eval_data: Vec<(u64, Option<u64>, bool)> = assocs.iter().map(|(tracker_id, gt_track_id)| {
+                // Check if this is a correct match based on the optimal assignment
+                let is_correct = match (gt_track_id, result.assignment.get(tracker_id)) {
+                    (Some(gt_id), Some(assigned_gt)) => gt_id == assigned_gt,
+                    _ => false,
+                };
+                (*tracker_id, *gt_track_id, is_correct)
+            }).collect();
+            frame_eval_data.insert(display_idx, eval_data);
+        }
+
+        // Build pred_id time series: for each pred_id, track which GT it's tracking per frame
+        // pred_id -> Vec<(frame_idx, Option<gt_id>)>
+        let mut pred_timeseries: HashMap<u64, Vec<(usize, Option<u64>)>> = HashMap::new();
+
+        // Build from frame_eval_data
+        for (&display_idx, eval_data) in &frame_eval_data {
+            for &(tracker_id, gt_id, _) in eval_data {
+                pred_timeseries
+                    .entry(tracker_id)
+                    .or_default()
+                    .push((display_idx, gt_id));
             }
         }
 
-        // Evaluate each frame
-        for display_idx in 0..sampled_indices.len() {
-            evaluator.evaluate_frame(display_idx);
+        // Sort each pred_id's time series by frame
+        for series in pred_timeseries.values_mut() {
+            series.sort_by_key(|(frame, _)| *frame);
         }
 
-        // Compute HOTA metrics
-        evaluator.compute_hota();
-        let metrics = evaluator.metrics().clone();
+        // Also collect all unique GT IDs for Y-axis scale
+        let mut all_gt_ids: Vec<u64> = gt_by_display_frame
+            .values()
+            .flat_map(|boxes| boxes.iter().map(|(gt_id, _)| *gt_id))
+            .collect();
+        all_gt_ids.sort();
+        all_gt_ids.dedup();
 
-        eprintln!("Evaluation complete:");
-        eprintln!("  MOTA: {:.2}%", metrics.mota() * 100.0);
-        eprintln!("  HOTA: {:.2}%", metrics.hota() * 100.0);
-        eprintln!("  IDF1: {:.2}%", metrics.idf1() * 100.0);
-        eprintln!("  Precision: {:.2}%", metrics.precision() * 100.0);
-        eprintln!("  Recall: {:.2}%", metrics.recall() * 100.0);
-        eprintln!("  ID Switches: {}", metrics.id_switches);
-        eprintln!("  FP: {}, FN: {}, TP: {}", metrics.false_positives, metrics.false_negatives, metrics.true_positives);
+        // Store gt_timeseries as pred_timeseries (rename the field usage)
+        let gt_timeseries = pred_timeseries;
 
-        self.evaluator = Some(evaluator);
-        self.eval_metrics = Some(metrics);
+        self.association_result = Some(result);
+        self.frame_eval_data = frame_eval_data;
         self.gt_by_display_frame = gt_by_display_frame;
+        self.gt_timeseries = gt_timeseries;
         self.overlay_settings.show_eval_overlays = true;  // Auto-enable when GT is available
     }
 
@@ -532,19 +690,40 @@ impl VisualizerApp {
         }
     }
 
-    /// Get evaluation metrics
-    pub fn get_eval_metrics(&self) -> Option<&EvalMetrics> {
-        self.eval_metrics.as_ref()
+    /// Get association evaluation result
+    pub fn get_association_result(&self) -> Option<&AssociationResult> {
+        self.association_result.as_ref()
     }
 
-    /// Get frame evaluation result for the current frame
-    pub fn get_current_frame_eval(&self) -> Option<&FrameEvalResult> {
-        self.evaluator.as_ref()?.frame_result(self.current_frame)
+    /// Get frame evaluation data for the current frame
+    /// Returns Vec<(tracker_id, gt_track_id, is_correct_match)>
+    pub fn get_current_frame_eval(&self) -> Option<&Vec<(u64, Option<u64>, bool)>> {
+        self.frame_eval_data.get(&self.current_frame)
     }
 
     /// Get ground truth bboxes for current frame: Vec<(gt_track_id, (x,y,w,h))>
     pub fn get_current_frame_gt(&self) -> Option<&Vec<(u64, (f32, f32, f32, f32))>> {
         self.gt_by_display_frame.get(&self.current_frame)
+    }
+
+    /// Get Hungarian assignment: tracker_id -> assigned_gt_id
+    pub fn get_assignment(&self) -> Option<&HashMap<u64, u64>> {
+        self.association_result.as_ref().map(|r| &r.assignment)
+    }
+
+    /// Get GT time series: gt_id -> Vec<(frame_idx, Option<pred_id>)>
+    pub fn get_gt_timeseries(&self) -> &HashMap<u64, Vec<(usize, Option<u64>)>> {
+        &self.gt_timeseries
+    }
+
+    /// Get current frame index
+    pub fn get_current_frame(&self) -> usize {
+        self.current_frame
+    }
+
+    /// Get total frame count
+    pub fn get_total_frames(&self) -> usize {
+        self.frame_count()
     }
 
     /// Load a human-labeled dataset
@@ -557,12 +736,20 @@ impl VisualizerApp {
         self.current_frame = 0;
         self.video_texture = None;
         self.sampled_frames = Vec::new();
-        self.evaluator = None;
-        self.eval_metrics = None;
+        self.association_result = None;
+        self.frame_eval_data = HashMap::new();
         self.gt_by_display_frame = HashMap::new();
+        self.gt_timeseries = HashMap::new();
 
         match Clip::load_human_labeled(json_path, timestamps_path) {
             Ok(mut clip) => {
+                // Resolve duplicate GT IDs (same GT ID appearing multiple times in a frame)
+                // Keeps only the longest track, nullifies the rest
+                let (num_dups, num_nullified) = clip.resolve_duplicate_gt_ids();
+                if num_dups > 0 {
+                    eprintln!("Resolved {} duplicate GT IDs ({} detections nullified)", num_dups, num_nullified);
+                }
+
                 let video_path = clip.video_path.to_string_lossy().to_string();
                 eprintln!("Opening video: {}", video_path);
 
@@ -632,12 +819,9 @@ impl VisualizerApp {
                 pred.predicted_rect.x(), pred.predicted_rect.y(),
                 pred.predicted_rect.width(), pred.predicted_rect.height()));
             log.push_str(&format!("  Velocity: vx={:.4}, vy={:.4}\n", pred.velocity.0, pred.velocity.1));
-            log.push_str(&format!("  Pos cov diag: [x={:.2}, y={:.2}, a={:.6}, h={:.2}]\n",
+            log.push_str(&format!("  Cov diag: [x={:.2}, y={:.2}, a={:.6}, h={:.2}]\n",
                 pred.covariance_diag[0], pred.covariance_diag[1],
                 pred.covariance_diag[2], pred.covariance_diag[3]));
-            log.push_str(&format!("  Vel cov diag: [vx={:.2}, vy={:.2}, va={:.6}, vh={:.2}]\n",
-                pred.covariance_diag[4], pred.covariance_diag[5],
-                pred.covariance_diag[6], pred.covariance_diag[7]));
         } else {
             log.push_str(&format!("  Track {} not found in predictions\n", track_id));
         }

@@ -641,14 +641,15 @@ enum LegendItem {
 }
 
 // Color constants for evaluation visualization
-const COLOR_GT_BOX: Color32 = Color32::from_rgb(0, 255, 0);       // Green for ground truth
-const COLOR_FALSE_POSITIVE: Color32 = Color32::from_rgb(255, 0, 0);  // Red for FP
-const COLOR_FALSE_NEGATIVE: Color32 = Color32::from_rgb(255, 165, 0); // Orange for FN
-const COLOR_ID_SWITCH: Color32 = Color32::from_rgb(255, 0, 255);   // Magenta for ID switch
+const COLOR_GT_BOX: Color32 = Color32::from_rgb(0, 255, 0);       // Green for correct match
+const COLOR_FALSE_POSITIVE: Color32 = Color32::from_rgb(255, 0, 0);  // Red for wrong ID
 
-use jamtrack_rs::evaluation::FrameEvalResult;
+// Evaluation data: Vec<(tracker_id, gt_track_id, is_correct_match)>
+type FrameEvalData = Vec<(u64, Option<u64>, bool)>;
 
-/// Draw evaluation overlays (ground truth, FP/FN, ID switches)
+/// Draw evaluation overlays (ground truth boxes and match status coloring)
+/// frame_eval: Vec<(tracker_id, gt_track_id, is_correct_match)>
+/// assignment: Hungarian assignment mapping tracker_id -> assigned_gt_id
 pub fn draw_eval_overlays(
     painter: &Painter,
     video_rect: Rect,
@@ -656,9 +657,10 @@ pub fn draw_eval_overlays(
     video_height: u32,
     settings: &OverlaySettings,
     gt_bboxes: Option<&Vec<(u64, (f32, f32, f32, f32))>>,
-    frame_eval: Option<&FrameEvalResult>,
+    frame_eval: Option<&FrameEvalData>,
     track_results: Option<&TrackResults>,
     display_frame_idx: usize,
+    assignment: Option<&std::collections::HashMap<u64, u64>>,
 ) {
     if !settings.show_eval_overlays {
         return;
@@ -667,21 +669,15 @@ pub fn draw_eval_overlays(
     let scale_x = video_rect.width() / video_width as f32;
     let scale_y = video_rect.height() / video_height as f32;
 
-    // Get track bboxes for highlighting FP/FN
+    // Get track bboxes
     let tracks = track_results
         .and_then(|r| r.results_by_frame.get(&display_frame_idx))
         .map(|v| v.as_slice())
         .unwrap_or(&[]);
 
-    // Build a map of track_id -> bbox for tracks
-    let track_map: std::collections::HashMap<u64, &TrackedObject> = tracks
-        .iter()
-        .map(|t| (t.track_id as u64, t))
-        .collect();
-
-    // Build a map of gt_track_id -> bbox for ground truth
-    let gt_map: std::collections::HashMap<u64, (f32, f32, f32, f32)> = gt_bboxes
-        .map(|gts| gts.iter().cloned().collect())
+    // Build eval map: tracker_id -> (gt_track_id, is_correct)
+    let eval_map: std::collections::HashMap<u64, (Option<u64>, bool)> = frame_eval
+        .map(|fe| fe.iter().map(|(tid, gtid, correct)| (*tid, (*gtid, *correct))).collect())
         .unwrap_or_default();
 
     // Draw ground truth boxes (dashed green)
@@ -710,101 +706,75 @@ pub fn draw_eval_overlays(
         }
     }
 
-    if let Some(eval) = frame_eval {
-        // Draw false positives (red X on predicted tracks with no GT match)
-        if settings.show_false_positives {
-            for &fp_track_id in &eval.false_positives {
-                if let Some(track) = track_map.get(&fp_track_id) {
-                    let rect = &track.rect;
-                    let box_rect = Rect::from_min_size(
-                        Pos2::new(
-                            video_rect.min.x + rect.x() * scale_x,
-                            video_rect.min.y + rect.y() * scale_y,
-                        ),
-                        Vec2::new(rect.width() * scale_x, rect.height() * scale_y),
-                    );
+    // Draw tracker outputs with color coding based on match status
+    for track in tracks {
+        let tracker_id = track.track_id as u64;
+        let rect = &track.rect;
+        let box_rect = Rect::from_min_size(
+            Pos2::new(
+                video_rect.min.x + rect.x() * scale_x,
+                video_rect.min.y + rect.y() * scale_y,
+            ),
+            Vec2::new(rect.width() * scale_x, rect.height() * scale_y),
+        );
 
-                    // Draw red X through the box
-                    painter.line_segment(
-                        [box_rect.left_top(), box_rect.right_bottom()],
-                        Stroke::new(3.0, COLOR_FALSE_POSITIVE),
-                    );
-                    painter.line_segment(
-                        [box_rect.right_top(), box_rect.left_bottom()],
-                        Stroke::new(3.0, COLOR_FALSE_POSITIVE),
-                    );
+        // Get match info: (current_gt_id, is_correct)
+        let (current_gt_id, is_correct) = eval_map.get(&tracker_id)
+            .copied()
+            .unwrap_or((None, false));
 
-                    // Label
-                    painter.text(
-                        Pos2::new(box_rect.min.x + 2.0, box_rect.max.y + 2.0),
-                        egui::Align2::LEFT_TOP,
-                        "FP",
-                        FontId::proportional(12.0),
-                        COLOR_FALSE_POSITIVE,
-                    );
-                }
+        // Get assigned GT ID from Hungarian assignment
+        let assigned_gt_id = assignment.and_then(|a| a.get(&tracker_id).copied());
+
+        // Choose color based on match status
+        let box_color = match (assigned_gt_id, is_correct) {
+            (Some(_), true) => COLOR_GT_BOX,           // Green: correct match
+            (Some(_), false) => COLOR_FALSE_POSITIVE,  // Red: wrong identity
+            (None, _) => Color32::GRAY,                // Gray: not assigned to any GT
+        };
+
+        // Draw colored box
+        painter.rect_stroke(box_rect, 0.0, Stroke::new(3.0, box_color));
+
+        // Draw label showing assigned GT ID and current GT ID
+        // Format:
+        // - "#5 → GT:3" (correct - assigned to GT 3, currently tracking GT 3)
+        // - "#5 → GT:3 (now:7)" (wrong - assigned to GT 3, but tracking GT 7)
+        // - "#5 (no GT)" (not assigned to any GT track)
+        let label = match (assigned_gt_id, current_gt_id, is_correct) {
+            (Some(assigned), Some(_current), true) => {
+                // Correct: assigned and current match
+                format!("#{} → GT:{}", tracker_id, assigned)
             }
-        }
-
-        // Draw false negatives (orange circle on GT with no prediction match)
-        if settings.show_false_negatives {
-            for &fn_gt_id in &eval.false_negatives {
-                if let Some(&(x, y, w, h)) = gt_map.get(&fn_gt_id) {
-                    let box_rect = Rect::from_min_size(
-                        Pos2::new(
-                            video_rect.min.x + x * scale_x,
-                            video_rect.min.y + y * scale_y,
-                        ),
-                        Vec2::new(w * scale_x, h * scale_y),
-                    );
-
-                    // Draw orange circle in center
-                    painter.circle_stroke(
-                        box_rect.center(),
-                        (box_rect.width().min(box_rect.height()) / 4.0).max(10.0),
-                        Stroke::new(3.0, COLOR_FALSE_NEGATIVE),
-                    );
-
-                    // Label
-                    painter.text(
-                        Pos2::new(box_rect.min.x + 2.0, box_rect.max.y + 2.0),
-                        egui::Align2::LEFT_TOP,
-                        format!("FN:{}", fn_gt_id),
-                        FontId::proportional(12.0),
-                        COLOR_FALSE_NEGATIVE,
-                    );
-                }
+            (Some(assigned), Some(current), false) => {
+                // Wrong: assigned to one, tracking another
+                format!("#{} → GT:{} (now:{})", tracker_id, assigned, current)
             }
-        }
-
-        // Draw ID switches (magenta highlight on track)
-        if settings.show_id_switches {
-            for &(pred_id, old_gt, new_gt) in &eval.id_switches {
-                if let Some(track) = track_map.get(&pred_id) {
-                    let rect = &track.rect;
-                    let box_rect = Rect::from_min_size(
-                        Pos2::new(
-                            video_rect.min.x + rect.x() * scale_x,
-                            video_rect.min.y + rect.y() * scale_y,
-                        ),
-                        Vec2::new(rect.width() * scale_x, rect.height() * scale_y),
-                    );
-
-                    // Draw thick magenta border
-                    painter.rect_stroke(box_rect, 0.0, Stroke::new(4.0, COLOR_ID_SWITCH));
-
-                    // Label showing ID switch
-                    let label = format!("IDSW: {}->{}", old_gt, new_gt);
-                    painter.text(
-                        Pos2::new(box_rect.center().x, box_rect.min.y - 16.0),
-                        egui::Align2::CENTER_BOTTOM,
-                        label,
-                        FontId::proportional(12.0),
-                        COLOR_ID_SWITCH,
-                    );
-                }
+            (Some(assigned), None, _) => {
+                // Assigned but currently tracking non-GT object
+                format!("#{} → GT:{} (now:?)", tracker_id, assigned)
             }
-        }
+            (None, Some(current), _) => {
+                // Not assigned but tracking a GT object
+                format!("#{} (GT:{})", tracker_id, current)
+            }
+            (None, None, _) => {
+                // Not assigned, tracking non-GT object
+                format!("#{} (no GT)", tracker_id)
+            }
+        };
+
+        let label_pos = Pos2::new(box_rect.min.x + 2.0, box_rect.min.y - 14.0);
+        let text_galley = painter.layout_no_wrap(label.clone(), FontId::proportional(11.0), Color32::WHITE);
+        let text_rect = Rect::from_min_size(label_pos, text_galley.size() + Vec2::new(4.0, 2.0));
+        painter.rect_filled(text_rect, 2.0, Color32::from_black_alpha(180));
+        painter.text(
+            Pos2::new(label_pos.x + 2.0, label_pos.y + 1.0),
+            egui::Align2::LEFT_TOP,
+            label,
+            FontId::proportional(11.0),
+            box_color,
+        );
     }
 }
 
@@ -828,18 +798,15 @@ pub fn draw_eval_legend(painter: &Painter, video_rect: Rect, settings: &OverlayS
     let spacing = 20.0;
     let box_size = 14.0;
 
-    let items: Vec<(LegendItem, &str, bool)> = vec![
-        (LegendItem::DashedBox(COLOR_GT_BOX), "Ground Truth", settings.show_gt_boxes),
-        (LegendItem::Line(COLOR_FALSE_POSITIVE), "False Positive", settings.show_false_positives),
-        (LegendItem::SolidBox(COLOR_FALSE_NEGATIVE), "False Negative", settings.show_false_negatives),
-        (LegendItem::SolidBox(COLOR_ID_SWITCH), "ID Switch", settings.show_id_switches),
+    // Legend items for evaluation
+    let items: Vec<(LegendItem, &str)> = vec![
+        (LegendItem::DashedBox(COLOR_GT_BOX), "GT Box"),
+        (LegendItem::SolidBox(COLOR_GT_BOX), "Correct ID"),
+        (LegendItem::SolidBox(COLOR_FALSE_POSITIVE), "Wrong ID"),
+        (LegendItem::SolidBox(Color32::GRAY), "No GT"),
     ];
 
-    for (item, label, enabled) in items {
-        if !enabled {
-            continue;
-        }
-
+    for (item, label) in items {
         let item_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(box_size, box_size));
 
         match item {
@@ -850,13 +817,8 @@ pub fn draw_eval_legend(painter: &Painter, video_rect: Rect, settings: &OverlayS
                 draw_dashed_rect(painter, item_rect, Stroke::new(2.0, color), 4.0, 2.0);
             }
             LegendItem::Line(color) => {
-                // Draw X for FP
                 painter.line_segment(
                     [item_rect.left_top(), item_rect.right_bottom()],
-                    Stroke::new(2.0, color),
-                );
-                painter.line_segment(
-                    [item_rect.right_top(), item_rect.left_bottom()],
                     Stroke::new(2.0, color),
                 );
             }
@@ -876,3 +838,4 @@ pub fn draw_eval_legend(painter: &Painter, video_rect: Rect, settings: &OverlayS
         x += text_width + spacing;
     }
 }
+

@@ -75,7 +75,8 @@ where
             * (self.tlwh[(0, 3)] + T::from(1).unwrap())
     }
 
-    pub(crate) fn calc_iou(&self, other: &Rect<T>) -> T {
+    /// Calculate Intersection over Union (IoU) with another rectangle
+    pub fn calc_iou(&self, other: &Rect<T>) -> T {
         let box_area = other.area();
         let iw = (self.tlwh[(0, 0)] + self.tlwh[(0, 2)])
             .min(other.tlwh[(0, 0)] + other.tlwh[(0, 2)])

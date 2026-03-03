@@ -1,0 +1,31 @@
+# ByteTrack configuration
+# All parameters are optional - defaults shown below
+
+# Detection filtering
+detection_min_confidence: 0.3  # Filter detections below this confidence before tracking
+
+# Core tracking parameters
+track_thresh: 0.25      # Min confidence for low-conf pool
+high_thresh: 0.5        # Min confidence to spawn new track
+track_buffer: 1.0       # Track buffer in seconds
+use_ciou: false         # Use CIoU instead of IoU for matching
+
+# Matching IoU thresholds
+high_match_iou: 0.2
+high_match_weight: 1.0
+low_match_iou: 0.6
+low_match_weight: 1.0
+activate_iou: 0.3
+activate_weight: 1.0
+
+# Kalman filter parameters (per-frame, no sqrt(30) scaling)
+kalman_pos: 0.05              # 1/20
+kalman_vel: 0.00625           # 1/160
+kalman_pos_meas: 0.05         # 1/20
+kalman_pos_mot: 0.05          # 1/20
+kalman_vel_mot: 0.00625       # 1/160
+kalman_ar_init: 0.01
+kalman_dar_init: 0.00001
+kalman_ar_mot: 0.01
+kalman_dar_mot: 0.00001
+kalman_ar_meas: 0.1

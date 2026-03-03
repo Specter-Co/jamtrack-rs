@@ -11,27 +11,58 @@ pub fn render(app: &mut VisualizerApp, ctx: &egui::Context) {
     // Top panel with file info
     egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
         ui.horizontal(|ui| {
-            if ui.button("Open Folder...").clicked() {
-                if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                    app.load_clip(&path);
+            // Separate buttons for Video, Detections, Timestamps
+            if ui.button("Video...").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Video", &["mp4", "avi", "mkv", "mov", "webm"])
+                    .set_title("Select video file")
+                    .pick_file()
+                {
+                    app.pending_video = Some(path);
                 }
             }
 
-            if ui.button("Open Human-Labeled...").clicked() {
-                // First select the JSON file (detections with ground truth)
-                if let Some(json_path) = rfd::FileDialog::new()
+            if ui.button("Detections...").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
                     .add_filter("JSON", &["json"])
-                    .set_title("Select human-labeled JSON file")
+                    .set_title("Select detections JSON file")
                     .pick_file()
                 {
-                    // Then select the timestamps file
-                    if let Some(ts_path) = rfd::FileDialog::new()
-                        .add_filter("JSON", &["json"])
-                        .set_title("Select timestamps JSON file")
-                        .pick_file()
-                    {
-                        app.load_human_labeled(&json_path, &ts_path);
-                    }
+                    app.pending_detections = Some(path);
+                }
+            }
+
+            if ui.button("Timestamps...").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .set_title("Select timestamps JSON file")
+                    .pick_file()
+                {
+                    app.pending_timestamps = Some(path);
+                }
+            }
+
+            // Show pending files status
+            let has_video = app.pending_video.is_some();
+            let has_detections = app.pending_detections.is_some();
+            let has_timestamps = app.pending_timestamps.is_some();
+
+            if has_video || has_detections || has_timestamps {
+                ui.separator();
+                // Show checkmarks for selected files
+                let video_mark = if has_video { "V" } else { "-" };
+                let det_mark = if has_detections { "D" } else { "-" };
+                let ts_mark = if has_timestamps { "T" } else { "-" };
+                ui.label(format!("[{}{}{}]", video_mark, det_mark, ts_mark));
+            }
+
+            // Show "Load Dataset" button when all three are selected
+            if has_video && has_detections && has_timestamps {
+                if ui.button("Load Dataset").clicked() {
+                    let video = app.pending_video.take().unwrap();
+                    let det = app.pending_detections.take().unwrap();
+                    let ts = app.pending_timestamps.take().unwrap();
+                    app.load_with_video(&video, &det, &ts);
                 }
             }
 
@@ -48,7 +79,7 @@ pub fn render(app: &mut VisualizerApp, ctx: &egui::Context) {
             } else if let Some(err) = &app.load_error {
                 ui.colored_label(Color32::RED, err);
             } else {
-                ui.label("No clip loaded. Pass a directory path or click 'Open Folder'");
+                ui.label("Select Video, Detections, and Timestamps files to load");
             }
         });
     });
@@ -62,9 +93,14 @@ pub fn render(app: &mut VisualizerApp, ctx: &egui::Context) {
             });
         });
 
-    // Bottom panel with timeline
+    // Bottom panel with timeline (larger when eval overlays are showing)
+    let timeline_height = if app.overlay_settings.show_eval_overlays && app.get_gt_timeseries().len() > 0 {
+        200.0
+    } else {
+        60.0
+    };
     egui::TopBottomPanel::bottom("timeline_panel")
-        .min_height(60.0)
+        .min_height(timeline_height)
         .show(ctx, |ui| {
             render_timeline(app, ui, ctx);
         });
@@ -238,7 +274,7 @@ fn render_controls(app: &mut VisualizerApp, ui: &mut egui::Ui) {
     ui.separator();
 
     // Evaluation section (only show when ground truth is available)
-    if app.eval_metrics.is_some() {
+    if app.association_result.is_some() {
         ui.heading("Evaluation");
 
         // Evaluation overlays checkboxes
@@ -246,43 +282,31 @@ fn render_controls(app: &mut VisualizerApp, ui: &mut egui::Ui) {
         if app.overlay_settings.show_eval_overlays {
             ui.indent("eval_overlay_indent", |ui| {
                 ui.checkbox(&mut app.overlay_settings.show_gt_boxes, "Ground Truth Boxes");
-                ui.checkbox(&mut app.overlay_settings.show_false_positives, "False Positives");
-                ui.checkbox(&mut app.overlay_settings.show_false_negatives, "False Negatives");
-                ui.checkbox(&mut app.overlay_settings.show_id_switches, "ID Switches");
             });
         }
 
-        // Metrics display
-        if let Some(metrics) = app.get_eval_metrics() {
-            egui::CollapsingHeader::new("Metrics")
+        // Association Score display
+        if let Some(result) = app.get_association_result() {
+            let metrics = &result.metrics;
+            egui::CollapsingHeader::new("Association Score")
                 .default_open(true)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("MOTA:");
-                        ui.label(format!("{:.1}%", metrics.mota() * 100.0));
+                        ui.label("Coverage:");
+                        ui.strong(format!("{:.1}%", metrics.coverage() * 100.0));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("HOTA:");
-                        ui.label(format!("{:.1}%", metrics.hota() * 100.0));
+                        ui.label("Fragmentation:");
+                        ui.label(format!("{:.2}", metrics.fragmentation));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("IDF1:");
-                        ui.label(format!("{:.1}%", metrics.idf1() * 100.0));
-                    });
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("Precision:");
-                        ui.label(format!("{:.1}%", metrics.precision() * 100.0));
+                        ui.label("Confusion:");
+                        ui.label(format!("{:.2}", metrics.confusion));
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Recall:");
-                        ui.label(format!("{:.1}%", metrics.recall() * 100.0));
+                        ui.label("Tracked No Obj:");
+                        ui.label(format!("{}", metrics.tracked_no_object));
                     });
-                    ui.separator();
-                    ui.label(format!("TP: {}", metrics.true_positives));
-                    ui.label(format!("FP: {}", metrics.false_positives));
-                    ui.label(format!("FN: {}", metrics.false_negatives));
-                    ui.label(format!("ID Sw: {}", metrics.id_switches));
                 });
         }
 
@@ -291,16 +315,13 @@ fn render_controls(app: &mut VisualizerApp, ui: &mut egui::Ui) {
             egui::CollapsingHeader::new("Current Frame")
                 .default_open(false)
                 .show(ui, |ui| {
-                    ui.label(format!("TP: {}", frame_eval.true_positives.len()));
-                    ui.label(format!("FP: {}", frame_eval.false_positives.len()));
-                    ui.label(format!("FN: {}", frame_eval.false_negatives.len()));
-                    if !frame_eval.id_switches.is_empty() {
-                        ui.colored_label(Color32::YELLOW,
-                            format!("ID Switches: {}", frame_eval.id_switches.len()));
-                        for (pred_id, old_gt, new_gt) in &frame_eval.id_switches {
-                            ui.label(format!("  Track {} switched: {} -> {}", pred_id, old_gt, new_gt));
-                        }
-                    }
+                    let correct = frame_eval.iter().filter(|(_, _, is_correct)| *is_correct).count();
+                    let incorrect = frame_eval.iter().filter(|(_, gt_id, is_correct)| gt_id.is_some() && !is_correct).count();
+                    let no_gt = frame_eval.iter().filter(|(_, gt_id, _)| gt_id.is_none()).count();
+
+                    ui.colored_label(Color32::GREEN, format!("Correct: {}", correct));
+                    ui.colored_label(Color32::RED, format!("Wrong ID: {}", incorrect));
+                    ui.colored_label(Color32::GRAY, format!("No GT: {}", no_gt));
                 });
         }
 
@@ -316,8 +337,11 @@ fn render_controls(app: &mut VisualizerApp, ui: &mut egui::Ui) {
     // Show re-run button at top if params changed
     let params_changed = app.tracker_params != app.last_tracker_params;
     let classes_changed = app.overlay_settings.enabled_classes != app.last_enabled_classes;
-    if params_changed || classes_changed {
-        let label = if classes_changed && !params_changed {
+    let min_conf_changed = app.overlay_settings.detection_min_confidence != app.last_detection_min_confidence;
+    if (params_changed || classes_changed || min_conf_changed) && app.clip.is_some() {
+        let label = if min_conf_changed && !params_changed && !classes_changed {
+            "Re-run Tracker (min confidence changed)"
+        } else if classes_changed && !params_changed {
             "Re-run Tracker (class filter changed)"
         } else {
             "Re-run Tracker (params changed)"
@@ -465,6 +489,7 @@ fn render_timeline(app: &mut VisualizerApp, ui: &mut egui::Ui, ctx: &egui::Conte
         return;
     }
 
+    // Top row: playback controls
     ui.horizontal(|ui| {
         // Play/Pause button
         let play_text = if app.is_playing { "⏸" } else { "▶" };
@@ -478,38 +503,210 @@ fn render_timeline(app: &mut VisualizerApp, ui: &mut egui::Ui, ctx: &egui::Conte
         // Frame counter
         ui.label(format!("Frame: {} / {}", app.current_frame + 1, frame_count));
 
-        // Timeline slider
-        let mut frame = app.current_frame;
-        let response = ui.add(
-            egui::Slider::new(&mut frame, 0..=(frame_count.saturating_sub(1)))
-                .show_value(false)
-                .trailing_fill(true),
-        );
-        if response.changed() {
-            app.current_frame = frame;
-            app.is_playing = false;
-            app.mechanics_stage = 0; // Reset to first stage when jumping frames
-        }
-
         // Timestamp display (use original frame index)
         let original_frame_idx = app.get_original_frame_idx(app.current_frame);
         if let Some(clip) = &app.clip {
             if let Some(ts) = clip.get_timestamp(original_frame_idx) {
-                ui.label(format!("{}ms", ts));
+                let secs = ts / 1000;
+                let mins = secs / 60;
+                let secs = secs % 60;
+                ui.label(format!("{}:{:02}", mins, secs));
             }
         }
 
         // Detection count for current frame (use original frame index)
         if let Some(clip) = &app.clip {
             let det_count = clip.get_detections(original_frame_idx).len();
-            ui.label(format!("{} detections", det_count));
+            ui.label(format!("{} det", det_count));
         }
     });
+
+    // Draw time series plot if eval overlays are enabled
+    let pred_timeseries = app.get_gt_timeseries();
+    if app.overlay_settings.show_eval_overlays && !pred_timeseries.is_empty() {
+        let current_frame = app.get_current_frame();
+        let total_frames = app.get_total_frames();
+
+        // Allocate remaining space for the plot
+        let available = ui.available_size();
+        let (response, painter) = ui.allocate_painter(available, egui::Sense::click());
+        let rect = response.rect;
+
+        // Draw the time series in the timeline panel
+        draw_timeline_timeseries(
+            &painter,
+            rect,
+            pred_timeseries,
+            current_frame,
+            total_frames,
+        );
+
+        // Handle click to seek
+        if response.clicked() {
+            if let Some(pos) = response.interact_pointer_pos() {
+                let label_width = 50.0;
+                let margin = 10.0;
+                let plot_left = rect.min.x + label_width;
+                let plot_width = rect.width() - label_width - margin;
+
+                if pos.x >= plot_left && pos.x <= plot_left + plot_width {
+                    let normalized = (pos.x - plot_left) / plot_width;
+                    let target_frame = (normalized * total_frames as f32).round() as usize;
+                    let target_frame = target_frame.min(total_frames.saturating_sub(1));
+                    app.current_frame = target_frame;
+                    app.mechanics_stage = 0;
+                    app.is_playing = false;
+                }
+            }
+        }
+    } else {
+        // Simple timeline scrubber when no eval data
+        let mut frame = app.current_frame;
+        if ui.add(egui::Slider::new(&mut frame, 0..=frame_count.saturating_sub(1))
+            .show_value(false))
+            .changed()
+        {
+            app.current_frame = frame;
+            app.mechanics_stage = 0;
+        }
+    }
 
     // Request repaint if playing
     if app.is_playing {
         ctx.request_repaint();
     }
+}
+
+/// Draw time series plot in the timeline panel
+fn draw_timeline_timeseries(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    pred_timeseries: &std::collections::HashMap<u64, Vec<(usize, Option<u64>)>>,
+    current_frame: usize,
+    total_frames: usize,
+) {
+    if pred_timeseries.is_empty() || total_frames == 0 {
+        return;
+    }
+
+    // Collect all unique GT IDs for Y-axis scale
+    let mut all_gt_ids: Vec<u64> = pred_timeseries
+        .values()
+        .flat_map(|series| series.iter().filter_map(|(_, gt)| *gt))
+        .collect();
+    all_gt_ids.sort();
+    all_gt_ids.dedup();
+
+    if all_gt_ids.is_empty() {
+        return;
+    }
+
+    let label_width = 50.0;
+    let margin = 10.0;
+
+    // Semi-transparent background
+    painter.rect_filled(rect, 0.0, Color32::from_black_alpha(220));
+
+    let plot_left = rect.min.x + label_width;
+    let plot_width = rect.width() - label_width - margin;
+    let plot_top = rect.min.y + margin;
+    let plot_bottom = rect.max.y - margin;
+    let plot_inner_height = plot_bottom - plot_top;
+
+    // Map GT ID to Y position
+    let gt_to_y = |gt_id: u64| -> f32 {
+        let idx = all_gt_ids.iter().position(|&id| id == gt_id).unwrap_or(0);
+        let normalized = if all_gt_ids.len() > 1 {
+            idx as f32 / (all_gt_ids.len() - 1) as f32
+        } else {
+            0.5
+        };
+        plot_bottom - normalized * plot_inner_height
+    };
+
+    // Map frame to X position
+    let frame_to_x = |frame: usize| -> f32 {
+        plot_left + (frame as f32 / total_frames as f32) * plot_width
+    };
+
+    // Draw Y-axis labels (GT IDs)
+    for &gt_id in &all_gt_ids {
+        let y = gt_to_y(gt_id);
+        painter.text(
+            egui::Pos2::new(rect.min.x + 5.0, y - 6.0),
+            egui::Align2::LEFT_TOP,
+            format!("{}", gt_id),
+            egui::FontId::monospace(10.0),
+            Color32::GRAY,
+        );
+        // Horizontal grid line
+        painter.line_segment(
+            [egui::Pos2::new(plot_left, y), egui::Pos2::new(plot_left + plot_width, y)],
+            egui::Stroke::new(0.5, Color32::from_gray(60)),
+        );
+    }
+
+    // Generate colors for pred_ids
+    let pred_id_color = |pred_id: u64| -> Color32 {
+        drawing::track_color(pred_id)
+    };
+
+    // Draw each pred_id's line
+    for (&pred_id, series) in pred_timeseries {
+        let color = pred_id_color(pred_id);
+
+        // Draw line segments between consecutive points where gt_id is Some
+        let mut last_point: Option<egui::Pos2> = None;
+
+        for &(frame_idx, gt_id_opt) in series {
+            if let Some(gt_id) = gt_id_opt {
+                let x = frame_to_x(frame_idx);
+                let y = gt_to_y(gt_id);
+                let point = egui::Pos2::new(x, y);
+
+                // Draw line from last point
+                if let Some(last) = last_point {
+                    painter.line_segment([last, point], egui::Stroke::new(2.0, color));
+                }
+
+                // Draw point marker
+                painter.circle_filled(point, 3.0, color);
+
+                last_point = Some(point);
+            } else {
+                // GT is None - break the line
+                last_point = None;
+            }
+        }
+    }
+
+    // Draw current frame indicator (vertical white line)
+    let cursor_x = frame_to_x(current_frame);
+    painter.line_segment(
+        [
+            egui::Pos2::new(cursor_x, plot_top),
+            egui::Pos2::new(cursor_x, plot_bottom),
+        ],
+        egui::Stroke::new(2.0, Color32::WHITE),
+    );
+
+    // Label
+    painter.text(
+        egui::Pos2::new(rect.min.x + 5.0, rect.min.y + 2.0),
+        egui::Align2::LEFT_TOP,
+        "GT ID",
+        egui::FontId::monospace(10.0),
+        Color32::WHITE,
+    );
+
+    // X-axis label
+    painter.text(
+        egui::Pos2::new(plot_left + plot_width / 2.0, rect.max.y - 5.0),
+        egui::Align2::CENTER_BOTTOM,
+        "Time (frames) - click to seek",
+        egui::FontId::monospace(9.0),
+        Color32::GRAY,
+    );
 }
 
 fn render_video(app: &mut VisualizerApp, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -618,8 +815,10 @@ fn render_video(app: &mut VisualizerApp, ui: &mut egui::Ui, ctx: &egui::Context)
                         app.get_current_frame_eval(),
                         app.track_results.as_ref(),
                         display_idx,
+                        app.get_assignment(),
                     );
                     drawing::draw_eval_legend(&painter, rect, &app.overlay_settings);
+                    // Time series is now drawn in the timeline panel below
                 }
 
                 // Draw legend when mechanics visualization is enabled

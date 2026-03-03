@@ -368,3 +368,183 @@ fn find_nearest_frame(timestamps: &[u64], target_ms: u64) -> usize {
 
     best_idx
 }
+
+/// Compute IoU between two bboxes (roi format: left, top, right, bottom)
+fn compute_iou(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> f32 {
+    let (a_left, a_top, a_right, a_bottom) = a;
+    let (b_left, b_top, b_right, b_bottom) = b;
+
+    let inter_left = a_left.max(b_left);
+    let inter_top = a_top.max(b_top);
+    let inter_right = a_right.min(b_right);
+    let inter_bottom = a_bottom.min(b_bottom);
+
+    if inter_right <= inter_left || inter_bottom <= inter_top {
+        return 0.0;
+    }
+
+    let inter_area = (inter_right - inter_left) * (inter_bottom - inter_top);
+    let a_area = (a_right - a_left) * (a_bottom - a_top);
+    let b_area = (b_right - b_left) * (b_bottom - b_top);
+    let union_area = a_area + b_area - inter_area;
+
+    if union_area <= 0.0 {
+        0.0
+    } else {
+        inter_area / union_area
+    }
+}
+
+impl Clip {
+    /// Resolve duplicate GT IDs within the same frame.
+    ///
+    /// When a GT ID appears multiple times in the same frame, this function:
+    /// 1. Splits them into separate pseudo-tracks using IoU-based tracking
+    /// 2. Keeps only the longest pseudo-track with the original GT ID
+    /// 3. Sets gt_track_id to None for all other (shorter) pseudo-tracks
+    ///
+    /// Returns the number of GT IDs that had duplicates, and the number of detections nullified.
+    pub fn resolve_duplicate_gt_ids(&mut self) -> (usize, usize) {
+        // Step 1: Find all GT IDs that appear more than once in any frame
+        let mut duplicate_gt_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut all_gt_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+        for dets in self.detections_by_frame.values() {
+            let mut frame_gt_counts: HashMap<u64, usize> = HashMap::new();
+            for det in dets {
+                if let Some(gt_id) = det.gt_track_id {
+                    all_gt_ids.insert(gt_id);
+                    *frame_gt_counts.entry(gt_id).or_insert(0) += 1;
+                }
+            }
+            for (gt_id, count) in frame_gt_counts {
+                if count > 1 {
+                    duplicate_gt_ids.insert(gt_id);
+                }
+            }
+        }
+
+        if duplicate_gt_ids.is_empty() {
+            return (0, 0);
+        }
+
+        // Step 2: Find the next available ID (max existing + 1) for temporary pseudo-IDs
+        let max_existing_id = all_gt_ids.iter().copied().max().unwrap_or(0);
+        let mut next_pseudo_id = max_existing_id + 1;
+
+        // Step 3: For each duplicate GT ID, track instances across frames
+        let mut frame_indices: Vec<usize> = self.detections_by_frame.keys().copied().collect();
+        frame_indices.sort();
+
+        let mut total_nullified = 0;
+
+        for &original_gt_id in &duplicate_gt_ids {
+            // Track active pseudo-IDs and their last known positions
+            // pseudo_id -> (last_frame, bbox)
+            let mut active_tracks: HashMap<u64, (usize, (f32, f32, f32, f32))> = HashMap::new();
+
+            // Track which (frame_idx, det_idx) belong to which pseudo_id
+            let mut pseudo_id_detections: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
+
+            // Process frames in order to build pseudo-tracks
+            for &frame_idx in &frame_indices {
+                let dets = match self.detections_by_frame.get(&frame_idx) {
+                    Some(d) => d,
+                    None => continue,
+                };
+
+                // Find all detections with this GT ID in this frame
+                let mut det_indices: Vec<usize> = Vec::new();
+                for (i, det) in dets.iter().enumerate() {
+                    if det.gt_track_id == Some(original_gt_id) {
+                        det_indices.push(i);
+                    }
+                }
+
+                if det_indices.is_empty() {
+                    continue;
+                }
+
+                // Get bboxes for these detections
+                let det_bboxes: Vec<(f32, f32, f32, f32)> = det_indices.iter()
+                    .map(|&i| {
+                        let d = &dets[i];
+                        (d.roi_left, d.roi_top, d.roi_right, d.roi_bottom)
+                    })
+                    .collect();
+
+                // If only one detection and no active tracks, assign original ID
+                if det_indices.len() == 1 && active_tracks.is_empty() {
+                    active_tracks.insert(original_gt_id, (frame_idx, det_bboxes[0]));
+                    pseudo_id_detections.entry(original_gt_id).or_default().push((frame_idx, det_indices[0]));
+                    continue;
+                }
+
+                // Match detections to active tracks using IoU (greedy)
+                let mut assigned_pseudo_ids: Vec<Option<u64>> = vec![None; det_indices.len()];
+                let mut used_tracks: std::collections::HashSet<u64> = std::collections::HashSet::new();
+
+                // Build IoU pairs and sort by IoU descending
+                let mut iou_pairs: Vec<(f32, usize, u64)> = Vec::new();
+                for (det_i, &bbox) in det_bboxes.iter().enumerate() {
+                    for (&pseudo_id, &(_, track_bbox)) in &active_tracks {
+                        let iou = compute_iou(bbox, track_bbox);
+                        if iou > 0.1 {
+                            iou_pairs.push((iou, det_i, pseudo_id));
+                        }
+                    }
+                }
+                iou_pairs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+                // Greedy assignment
+                for (_, det_i, pseudo_id) in iou_pairs {
+                    if assigned_pseudo_ids[det_i].is_none() && !used_tracks.contains(&pseudo_id) {
+                        assigned_pseudo_ids[det_i] = Some(pseudo_id);
+                        used_tracks.insert(pseudo_id);
+                    }
+                }
+
+                // Assign new pseudo-IDs to unmatched detections
+                for assigned in assigned_pseudo_ids.iter_mut() {
+                    if assigned.is_none() {
+                        if !used_tracks.contains(&original_gt_id) && !active_tracks.contains_key(&original_gt_id) {
+                            *assigned = Some(original_gt_id);
+                            used_tracks.insert(original_gt_id);
+                        } else {
+                            *assigned = Some(next_pseudo_id);
+                            next_pseudo_id += 1;
+                        }
+                    }
+                }
+
+                // Record assignments and update active tracks
+                for (det_i, &det_idx) in det_indices.iter().enumerate() {
+                    let pseudo_id = assigned_pseudo_ids[det_i].unwrap();
+                    pseudo_id_detections.entry(pseudo_id).or_default().push((frame_idx, det_idx));
+                    active_tracks.insert(pseudo_id, (frame_idx, det_bboxes[det_i]));
+                }
+            }
+
+            // Step 4: Find the longest pseudo-track and keep only that one
+            let longest_pseudo_id = pseudo_id_detections.iter()
+                .max_by_key(|(_, dets)| dets.len())
+                .map(|(&id, _)| id);
+
+            // Nullify all detections that don't belong to the longest track
+            for (&pseudo_id, det_locations) in &pseudo_id_detections {
+                if Some(pseudo_id) != longest_pseudo_id {
+                    for &(frame_idx, det_idx) in det_locations {
+                        if let Some(dets) = self.detections_by_frame.get_mut(&frame_idx) {
+                            if let Some(det) = dets.get_mut(det_idx) {
+                                det.gt_track_id = None;
+                                total_nullified += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        (duplicate_gt_ids.len(), total_nullified)
+    }
+}
