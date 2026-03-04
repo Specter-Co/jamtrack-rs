@@ -122,6 +122,7 @@ struct HumanLabeledJson {
 #[derive(Deserialize)]
 struct HumanLabeledDetectionJson {
     frame_idx: usize,
+    #[serde(alias = "timestamp_ms")]
     timestamp: u64,
     /// [left, top, right, bottom] normalized (0-1)
     bbox: [f32; 4],
@@ -428,6 +429,10 @@ impl Clip {
             return (0, 0);
         }
 
+        eprintln!("[WARN] Found {} GT IDs with duplicates in same frame: {:?}",
+            duplicate_gt_ids.len(),
+            duplicate_gt_ids.iter().collect::<Vec<_>>());
+
         // Step 2: Find the next available ID (max existing + 1) for temporary pseudo-IDs
         let max_existing_id = all_gt_ids.iter().copied().max().unwrap_or(0);
         let mut next_pseudo_id = max_existing_id + 1;
@@ -533,6 +538,13 @@ impl Clip {
             // Nullify all detections that don't belong to the longest track
             for (&pseudo_id, det_locations) in &pseudo_id_detections {
                 if Some(pseudo_id) != longest_pseudo_id {
+                    let frames_pruned: Vec<usize> = det_locations.iter().map(|(f, _)| *f).collect();
+                    eprintln!("[WARN] GT ID {}: pruning {} detections on frames {:?} (keeping pseudo-track {:?} with {} detections)",
+                        original_gt_id,
+                        det_locations.len(),
+                        frames_pruned,
+                        longest_pseudo_id,
+                        longest_pseudo_id.map(|id| pseudo_id_detections.get(&id).map(|d| d.len()).unwrap_or(0)).unwrap_or(0));
                     for &(frame_idx, det_idx) in det_locations {
                         if let Some(dets) = self.detections_by_frame.get_mut(&frame_idx) {
                             if let Some(det) = dets.get_mut(det_idx) {

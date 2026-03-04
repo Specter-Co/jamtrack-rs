@@ -495,6 +495,7 @@ impl VisualizerApp {
 
         // Track deduplication stats
         let mut total_duplicates_removed = 0usize;
+        let mut dedup_log: Vec<(usize, u64)> = Vec::new(); // (frame_idx, gt_id) for pruned duplicates
 
         // Collect ground truth bboxes and match tracker outputs to detections
         for (display_idx, &frame_idx) in sampled_indices.iter().enumerate() {
@@ -526,10 +527,12 @@ impl VisualizerApp {
                     if !dominated {
                         if gt_id_to_best_det.contains_key(&gt_id) {
                             total_duplicates_removed += 1;
+                            dedup_log.push((frame_idx, gt_id));
                         }
                         gt_id_to_best_det.insert(gt_id, (det_idx, best_iou, (x, y, w, h)));
                     } else {
                         total_duplicates_removed += 1;
+                        dedup_log.push((frame_idx, gt_id));
                     }
                 }
             }
@@ -589,8 +592,11 @@ impl VisualizerApp {
         }
 
         if total_duplicates_removed > 0 {
-            eprintln!("Deduplication: removed {} duplicate GT annotations (same GT ID in same frame)",
+            eprintln!("[WARN] Deduplication: removed {} duplicate GT annotations (same GT ID in same frame)",
                 total_duplicates_removed);
+            for (frame_idx, gt_id) in &dedup_log {
+                eprintln!("[WARN]   Frame {}: pruned duplicate GT ID {}", frame_idx, gt_id);
+            }
         }
 
         // Compute Association Score metrics
